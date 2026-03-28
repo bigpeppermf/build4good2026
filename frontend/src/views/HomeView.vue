@@ -44,12 +44,6 @@ import { RouterLink } from "vue-router";
       <div class="hero-cta">
         <RouterLink
           :to="{ name: 'dashboard' }"
-          class="cta-primary"
-        >
-          Open dashboard
-        </RouterLink>
-        <RouterLink
-          :to="{ name: 'dashboard' }"
           class="cta-mojo"
           aria-label="Start session"
         >

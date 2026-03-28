@@ -17,30 +17,25 @@ import AppNav from "./components/AppNav.vue";
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   color: var(--ink);
 }
 
 .main {
   flex: 1;
-  width: 100%;
-  max-width: 100%;
+  min-width: 0;
+  margin-left: var(--sidebar-width, 13rem);
   padding-left: var(--page-pad-x);
-  padding-right: var(--nav-clearance);
+  padding-right: var(--page-pad-x);
   padding-top: max(var(--page-pad-y), env(safe-area-inset-top, 0px));
   padding-bottom: max(var(--page-pad-y), env(safe-area-inset-bottom, 0px));
 }
 
-@media (min-width: 900px) {
+@media (max-width: 480px) {
   .main {
-    padding-right: max(var(--page-pad-x), calc(env(safe-area-inset-right, 0px) + 7.25rem));
-  }
-}
-
-@media (max-width: 380px) {
-  .main {
+    margin-left: var(--sidebar-width, 10rem);
     padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
-    padding-right: max(0.75rem, calc(env(safe-area-inset-right, 0px) + 5.25rem));
+    padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
   }
 }
 </style>

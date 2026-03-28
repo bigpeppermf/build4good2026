@@ -1,29 +1,24 @@
 import { computed, nextTick, onUnmounted, ref, shallowRef } from "vue";
 
-/** Downscaled analysis grid (speed over fidelity). */
-const ANALYSIS_W = 160;
-const ANALYSIS_H = 90;
+/** How often encoded chunks are produced and pushed over the WebSocket. */
+const STREAM_SLICE_MS = 500;
 
-/** Mean luminance delta (0–255) above which we treat the board as “active”. */
-const MOTION_THRESHOLD = 14;
+const STREAM_PATH = "/api/practice/stream";
 
-/** Minimum gap between snapshots so bursts of motion do not flood the server. */
-const CAPTURE_COOLDOWN_MS = 1400;
+function streamWebSocketUrl(): string {
+  const env = import.meta.env.VITE_PRACTICE_STREAM_WS as string | undefined;
+  if (env && env.trim().length > 0) {
+    return env.trim();
+  }
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}${STREAM_PATH}`;
+}
 
-const JPEG_QUALITY = 0.82;
-const EXPORT_MAX_WIDTH = 1280;
-
-export type CapturedFrame = {
-  blob: Blob;
-  timestampMs: number;
-  motionMean: number;
-};
-
-function pickAudioMime(): string | undefined {
+function pickStreamMime(): string | undefined {
   const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
   ];
   for (const t of candidates) {
     if (MediaRecorder.isTypeSupported(t)) {
@@ -31,112 +26,6 @@ function pickAudioMime(): string | undefined {
     }
   }
   return undefined;
-}
-
-function grayFromImageData(data: ImageData, out: Uint8Array): void {
-  const { data: px, width, height } = data;
-  let j = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * 4;
-      const r = px[i];
-      const g = px[i + 1];
-      const b = px[i + 2];
-      out[j++] = (r + r + g + g + g + b) / 6;
-    }
-  }
-}
-
-function meanAbsDiff(a: Uint8Array, b: Uint8Array): number {
-  const n = Math.min(a.length, b.length);
-  if (n === 0) {
-    return 0;
-  }
-  let s = 0;
-  for (let i = 0; i < n; i++) {
-    s += Math.abs(a[i] - b[i]);
-  }
-  return s / n;
-}
-
-function captureJpegFromVideo(video: HTMLVideoElement): Promise<Blob | null> {
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  if (vw <= 0 || vh <= 0) {
-    return Promise.resolve(null);
-  }
-
-  const scale = Math.min(1, EXPORT_MAX_WIDTH / vw);
-  const cw = Math.round(vw * scale);
-  const ch = Math.round(vh * scale);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = cw;
-  canvas.height = ch;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    return Promise.resolve(null);
-  }
-  ctx.drawImage(video, 0, 0, cw, ch);
-
-  return new Promise((resolve) => {
-    canvas.toBlob(
-      (blob) => resolve(blob),
-      "image/jpeg",
-      JPEG_QUALITY,
-    );
-  });
-}
-
-async function uploadPracticeSession(
-  audio: Blob,
-  frames: CapturedFrame[],
-): Promise<{ ok: boolean; message: string }> {
-  const fd = new FormData();
-  fd.append(
-    "audio",
-    audio,
-    audio.type.includes("webm") ? "session.webm" : "session.audio",
-  );
-
-  const meta = frames.map((f, i) => ({
-    t: f.timestampMs,
-    m: Math.round(f.motionMean * 100) / 100,
-    i,
-  }));
-  fd.append("framesMeta", JSON.stringify(meta));
-
-  frames.forEach((f, i) => {
-    fd.append(`frame_${i}`, f.blob, `frame_${i}.jpg`);
-  });
-
-  try {
-    const res = await fetch("/api/practice/upload", {
-      method: "POST",
-      body: fd,
-    });
-    if (res.ok) {
-      return { ok: true, message: "Server accepted the session." };
-    }
-    if (res.status === 404) {
-      return {
-        ok: false,
-        message:
-          "Upload endpoint not implemented yet (404). Backend can add POST /api/practice/upload.",
-      };
-    }
-    const text = await res.text().catch(() => "");
-    return {
-      ok: false,
-      message: `Upload failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ""}`,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      message:
-        e instanceof Error ? e.message : "Network error while uploading.",
-    };
-  }
 }
 
 export function useWhiteboardSession() {
@@ -147,31 +36,15 @@ export function useWhiteboardSession() {
   const isSessionActive = ref(false);
   const errorMessage = ref<string | null>(null);
 
-  const capturedFrames = ref<CapturedFrame[]>([]);
-  const lastMotionMean = ref(0);
   const uploadMessage = ref<string | null>(null);
   const uploadOk = ref<boolean | null>(null);
   const uploadState = ref<"idle" | "uploading" | "done">("idle");
 
-  const audioPlaybackUrl = ref<string | null>(null);
-  const thumbUrls = ref<string[]>([]);
+  /** Local replay URL (full WebM after stop). */
+  const sessionPlaybackUrl = ref<string | null>(null);
 
-  let audioRecorder: MediaRecorder | null = null;
-  const audioChunks: Blob[] = [];
-  let rafId = 0;
-
-  const analysisCanvas = document.createElement("canvas");
-  analysisCanvas.width = ANALYSIS_W;
-  analysisCanvas.height = ANALYSIS_H;
-  const analysisCtx = analysisCanvas.getContext("2d", {
-    willReadFrequently: true,
-  });
-
-  const grayA = new Uint8Array(ANALYSIS_W * ANALYSIS_H);
-  let prevGray: Uint8Array | null = null;
-  let lastCaptureAt = 0;
-  let captureBusy = false;
-  let sessionStartPerf = 0;
+  const streamWsConnected = ref(false);
+  const chunksSentCount = ref(0);
 
   const sessionElapsedMs = ref(0);
   let sessionTimerId: ReturnType<typeof setInterval> | null = null;
@@ -182,6 +55,11 @@ export function useWhiteboardSession() {
     const s = totalSec % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   });
+
+  let mediaRecorder: MediaRecorder | null = null;
+  const streamChunks: Blob[] = [];
+  let practiceSocket: WebSocket | null = null;
+  const pendingChunks: Blob[] = [];
 
   function clearSessionTimer() {
     if (sessionTimerId !== null) {
@@ -199,31 +77,64 @@ export function useWhiteboardSession() {
     }, 250);
   }
 
-  function revokeAudioUrl() {
-    if (audioPlaybackUrl.value) {
-      URL.revokeObjectURL(audioPlaybackUrl.value);
-      audioPlaybackUrl.value = null;
+  function revokeSessionPlaybackUrl() {
+    if (sessionPlaybackUrl.value) {
+      URL.revokeObjectURL(sessionPlaybackUrl.value);
+      sessionPlaybackUrl.value = null;
     }
   }
 
-  function revokeThumbs() {
-    thumbUrls.value.forEach((u) => URL.revokeObjectURL(u));
-    thumbUrls.value = [];
+  function flushPendingChunks() {
+    const ws = practiceSocket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    while (pendingChunks.length > 0) {
+      const chunk = pendingChunks.shift();
+      if (chunk && chunk.size > 0) {
+        ws.send(chunk);
+        chunksSentCount.value += 1;
+      }
+    }
   }
 
-  function stopMotionLoop() {
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
+  function sendChunkToSocket(blob: Blob) {
+    if (blob.size === 0) {
+      return;
     }
-    prevGray = null;
-    lastCaptureAt = 0;
-    captureBusy = false;
+    const ws = practiceSocket;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(blob);
+      chunksSentCount.value += 1;
+    } else {
+      pendingChunks.push(blob);
+    }
+  }
+
+  function closePracticeSocket() {
+    if (practiceSocket) {
+      practiceSocket.onopen = null;
+      practiceSocket.onerror = null;
+      practiceSocket.onclose = null;
+      practiceSocket.onmessage = null;
+      if (
+        practiceSocket.readyState === WebSocket.OPEN ||
+        practiceSocket.readyState === WebSocket.CONNECTING
+      ) {
+        practiceSocket.close();
+      }
+      practiceSocket = null;
+    }
+    streamWsConnected.value = false;
+    pendingChunks.length = 0;
+  }
+
+  function stopSessionTimerAndMotion() {
     clearSessionTimer();
   }
 
   function teardownStream() {
-    stopMotionLoop();
+    stopSessionTimerAndMotion();
     activeStream.value?.getTracks().forEach((t) => t.stop());
     activeStream.value = null;
     if (videoRef.value) {
@@ -231,69 +142,17 @@ export function useWhiteboardSession() {
     }
   }
 
-  function tickMotion() {
-    const video = videoRef.value;
-    const stream = activeStream.value;
-    if (!video || !stream || !analysisCtx || !isSessionActive.value) {
-      return;
-    }
-    if (video.readyState < 2 || video.videoWidth <= 0) {
-      rafId = requestAnimationFrame(tickMotion);
-      return;
-    }
-
-    analysisCtx.drawImage(video, 0, 0, ANALYSIS_W, ANALYSIS_H);
-    const snapshot = analysisCtx.getImageData(0, 0, ANALYSIS_W, ANALYSIS_H);
-    grayFromImageData(snapshot, grayA);
-
-    if (prevGray !== null) {
-      const motion = meanAbsDiff(prevGray, grayA);
-      lastMotionMean.value = motion;
-
-      const now = performance.now();
-      if (
-        motion >= MOTION_THRESHOLD &&
-        now - lastCaptureAt >= CAPTURE_COOLDOWN_MS &&
-        !captureBusy
-      ) {
-        lastCaptureAt = now;
-        captureBusy = true;
-        const motionSnapshot = motion;
-        const timeSnapshot = now;
-        captureJpegFromVideo(video).then((blob) => {
-          captureBusy = false;
-          if (blob && blob.size > 0 && isSessionActive.value) {
-            capturedFrames.value = [
-              ...capturedFrames.value,
-              {
-                blob,
-                timestampMs: Math.round(timeSnapshot - sessionStartPerf),
-                motionMean: motionSnapshot,
-              },
-            ];
-          }
-        });
-      }
-    }
-
-    if (!prevGray || prevGray.length !== grayA.length) {
-      prevGray = new Uint8Array(grayA.length);
-    }
-    prevGray.set(grayA);
-
-    rafId = requestAnimationFrame(tickMotion);
-  }
-
   async function startSession() {
     errorMessage.value = null;
     uploadMessage.value = null;
     uploadOk.value = null;
     uploadState.value = "idle";
-    revokeAudioUrl();
-    revokeThumbs();
-    capturedFrames.value = [];
-    audioChunks.length = 0;
-    stopMotionLoop();
+    revokeSessionPlaybackUrl();
+    streamChunks.length = 0;
+    pendingChunks.length = 0;
+    chunksSentCount.value = 0;
+    closePracticeSocket();
+    stopSessionTimerAndMotion();
     sessionElapsedMs.value = 0;
 
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -335,70 +194,155 @@ export function useWhiteboardSession() {
         await el.play().catch(() => undefined);
       }
 
-      const audioOnly = new MediaStream(stream.getAudioTracks());
-      const mime = pickAudioMime();
+      const mime = pickStreamMime();
       const rec = mime
-        ? new MediaRecorder(audioOnly, { mimeType: mime })
-        : new MediaRecorder(audioOnly);
+        ? new MediaRecorder(stream, { mimeType: mime })
+        : new MediaRecorder(stream);
 
       rec.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          audioChunks.push(e.data);
+        if (e.data.size === 0) {
+          return;
         }
+        streamChunks.push(e.data);
+        sendChunkToSocket(e.data);
       };
 
-      rec.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, {
-          type: rec.mimeType || "audio/webm",
-        });
-        revokeAudioUrl();
-        audioPlaybackUrl.value = URL.createObjectURL(audioBlob);
-
+      rec.onstop = () => {
+        isSessionActive.value = false;
+        streamWsConnected.value = false;
         uploadState.value = "uploading";
-        const result = await uploadPracticeSession(
-          audioBlob,
-          capturedFrames.value,
-        );
-        uploadState.value = "done";
-        uploadMessage.value = result.message;
-        uploadOk.value = result.ok;
+        clearSessionTimer();
+        try {
+          if (practiceSocket?.readyState === WebSocket.OPEN) {
+            practiceSocket.send(
+              JSON.stringify({
+                type: "stop",
+                elapsedMs: Math.round(sessionElapsedMs.value),
+                chunksSent: chunksSentCount.value,
+                mime: rec.mimeType || "video/webm",
+              }),
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+        closePracticeSocket();
 
-        revokeThumbs();
-        thumbUrls.value = capturedFrames.value.map((f) =>
-          URL.createObjectURL(f.blob),
-        );
+        const blob = new Blob(streamChunks, {
+          type: rec.mimeType || "video/webm",
+        });
+        streamChunks.length = 0;
+        revokeSessionPlaybackUrl();
+        if (blob.size > 0) {
+          sessionPlaybackUrl.value = URL.createObjectURL(blob);
+        }
+
+        uploadState.value = "done";
+        uploadOk.value = true;
+        uploadMessage.value =
+          "Session ended. Media was streamed to the backend while recording; local replay is available below if the browser produced a file.";
 
         teardownStream();
-        isSessionActive.value = false;
-        audioRecorder = null;
+        mediaRecorder = null;
       };
 
-      audioRecorder = rec;
-      rec.start(1000);
-      isSessionActive.value = true;
-      sessionStartPerf = performance.now();
-      startSessionTimer();
-      prevGray = null;
-      rafId = requestAnimationFrame(tickMotion);
+      mediaRecorder = rec;
+
+      const url = streamWebSocketUrl();
+      const ws = new WebSocket(url);
+      practiceSocket = ws;
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          reject(new Error("Timed out connecting to the practice stream."));
+        }, 12000);
+
+        ws.onopen = () => {
+          window.clearTimeout(timeout);
+          streamWsConnected.value = true;
+          try {
+            ws.send(
+              JSON.stringify({
+                type: "start",
+                mime: rec.mimeType || mime || "video/webm",
+              }),
+            );
+          } catch {
+            /* ignore */
+          }
+          flushPendingChunks();
+          try {
+            rec.start(STREAM_SLICE_MS);
+          } catch (err) {
+            reject(
+              err instanceof Error
+                ? err
+                : new Error("Could not start media recorder."),
+            );
+            return;
+          }
+          isSessionActive.value = true;
+          startSessionTimer();
+          resolve();
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(timeout);
+          streamWsConnected.value = false;
+          reject(new Error("WebSocket stream error (is the backend WS route up?)"));
+        };
+
+        ws.onclose = (ev) => {
+          window.clearTimeout(timeout);
+          streamWsConnected.value = false;
+          if (ev.code !== 1000 && ev.code !== 1005 && isSessionActive.value) {
+            errorMessage.value = `Stream closed (${ev.code}). Stopping recording.`;
+            try {
+              if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop();
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+        };
+      });
     } catch (e) {
+      closePracticeSocket();
+      if (mediaRecorder) {
+        try {
+          if (mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      mediaRecorder = null;
       teardownStream();
       isSessionActive.value = false;
-      audioRecorder = null;
+      streamWsConnected.value = false;
       errorMessage.value =
         e instanceof Error
           ? e.message
-          : "Could not access the camera or microphone.";
+          : "Could not start camera, recorder, or stream.";
     } finally {
       isSettingUp.value = false;
     }
   }
 
   function stopSession() {
-    stopMotionLoop();
-    const rec = audioRecorder;
+    clearSessionTimer();
+    const rec = mediaRecorder;
     if (rec && rec.state !== "inactive") {
+      try {
+        rec.requestData?.();
+      } catch {
+        /* ignore */
+      }
       rec.stop();
     } else {
+      closePracticeSocket();
       teardownStream();
       isSessionActive.value = false;
     }
@@ -406,16 +350,16 @@ export function useWhiteboardSession() {
 
   onUnmounted(() => {
     clearSessionTimer();
-    stopMotionLoop();
-    if (audioRecorder && audioRecorder.state !== "inactive") {
-      audioRecorder.onstop = null;
-      audioRecorder.stop();
+    closePracticeSocket();
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.onstop = null;
+      mediaRecorder.stop();
     }
-    audioRecorder = null;
+    mediaRecorder = null;
     teardownStream();
     isSessionActive.value = false;
-    revokeAudioUrl();
-    revokeThumbs();
+    revokeSessionPlaybackUrl();
+    streamChunks.length = 0;
   });
 
   return {
@@ -424,13 +368,12 @@ export function useWhiteboardSession() {
     isSettingUp,
     isSessionActive,
     errorMessage,
-    capturedFrames,
-    lastMotionMean,
     uploadMessage,
     uploadOk,
     uploadState,
-    audioPlaybackUrl,
-    thumbUrls,
+    sessionPlaybackUrl,
+    streamWsConnected,
+    chunksSentCount,
     sessionElapsedMs,
     sessionTimeLabel,
     startSession,
