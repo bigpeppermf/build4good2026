@@ -6,14 +6,14 @@ Complete reference for all MCP tools, HTTP endpoints, and core classes in the sy
 
 ## Overview
 
-This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — the Gemini vision agent watches JPEG frames and builds a graph of the design as it unfolds. **Audio is not used; analysis is visual-only.** When the session ends, the graph is persisted to MongoDB for scoring and comparison.
+This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — a separate computer vision pipeline analyzes JPEG frames and sends text descriptions of changes to the Gemini agent, which builds a graph of the design as it unfolds. **The agent never receives raw images or audio; it receives only text descriptions produced by the CV pipeline.** When the session ends, the graph is persisted to MongoDB for scoring and comparison.
 
 ### Three surfaces, two callers
 
 | Surface | Caller | Purpose |
 |---------|--------|---------|
 | MCP tools (`/mcp`) | External MCP clients | Mutate and inspect the graph via the MCP protocol |
-| `POST /agent/process-frame` | Frontend | Send a JPEG frame to the Gemini agent for real-time analysis |
+| `POST /agent/process-frame` | CV pipeline | Send a text description of whiteboard changes to the Gemini agent |
 | `POST /end-session` | Frontend | Persist the completed graph to MongoDB |
 
 ### Tool categories
@@ -330,28 +330,40 @@ HTTP endpoints are called directly by the **frontend**, not via the MCP protocol
 
 ### `POST /agent/process-frame`
 
-Send a motion-triggered JPEG frame to the Gemini vision agent. The agent analyzes the frame, calls any necessary graph mutation tools (same operations as the MCP tools), and returns a one-sentence verbal response.
+Called by the **computer vision pipeline** (not the frontend directly) after each whiteboard frame is analyzed. Passes a text description of what structurally changed to the Gemini agent, which calls graph mutation tools as needed and returns a one-sentence verbal response.
 
-**Audio is not sent or used. Analysis is visual-only.**
+**The agent never receives raw images or audio — only the text description.**
 
-**Request:** `multipart/form-data`
+**Request:** `application/json`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `frame` | binary (JPEG) | Yes | Raw JPEG bytes of the whiteboard frame. |
-| `timestamp_ms` | string (integer) | No | Milliseconds since session start. Defaults to `0`. |
+| `visual_delta` | `string` | Yes | Text description of what changed on the whiteboard since the previous frame (e.g. `"A box labeled 'API Gateway' was drawn with an arrow to 'Database'"`). Must be non-empty. |
+| `timestamp_ms` | `integer` | No | Milliseconds since session start. Defaults to `0`. |
+
+**Example request**
+```json
+{
+  "visual_delta": "A box labeled 'Load Balancer' appeared above the API service with an arrow pointing down.",
+  "timestamp_ms": 4200
+}
+```
 
 **Response (200)**
 ```json
 {
-  "verbal_response": "Got it — I've added the API Gateway and connected it to the load balancer.",
+  "verbal_response": "Got it — I've added the Load Balancer and connected it to the API service.",
   "timestamp_ms": 4200
 }
 ```
 
 **Response (400)**
 ```json
-{ "error": "Missing or invalid 'frame' field." }
+{ "error": "Missing or empty 'visual_delta' field." }
+```
+
+```json
+{ "error": "Request body must be JSON." }
 ```
 
 **Response (500)**
@@ -363,7 +375,7 @@ Send a motion-triggered JPEG frame to the Gemini vision agent. The agent analyze
 - Maintains conversation history across all frames for the session (context persists).
 - Calls graph mutation tools (`create_node`, `add_edge`, etc.) when it detects structural changes.
 - Returns a Socratic question if two or more consecutive frames show no changes.
-- Never fabricates nodes or edges — every mutation is grounded in visual evidence.
+- Never fabricates nodes or edges — every mutation is grounded in the visual delta text.
 
 ---
 

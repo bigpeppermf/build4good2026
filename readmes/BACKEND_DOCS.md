@@ -31,20 +31,26 @@ Hint will stop timer and resume after hint is generated. Review will end timer.
 DURING SESSION:
 
 -COLLECTION PHASE (handled by Benji / WhiteboardAgent):
-  - input: periodically captured JPEG frames from the whiteboard camera
-    NOTE: audio is NOT used. Analysis is visual-only.
+  - input: text description of what changed on the whiteboard ("visual_delta"),
+    produced by a separate computer vision pipeline that analyzes JPEG frames.
+    NOTE: audio is NOT used. The agent never receives raw images — only text.
   - Output: a mapped-out architecture in the same format as the question bank,
     built incrementally by the AI agent calling graph mutation tools.
 
   Agent architecture:
-    - Model: Google Gemini 2.0 Flash (multimodal vision + tool calling)
+    - Model: Google Gemini 2.0 Flash (tool calling)
     - Framework: LangChain (langchain-google-genai)
     - Tools: LangChain @tool wrappers around the in-process SystemDesignGraph
       (functionally identical to the MCP tools exposed at /mcp)
     - State: conversation history persists across frames for the session
     - Endpoint: POST /agent/process-frame
-      - form fields: frame (JPEG bytes), timestamp_ms (int)
+      - JSON body: { "visual_delta": "<text>", "timestamp_ms": N }
       - response: { "verbal_response": "...", "timestamp_ms": N }
+
+  CV pipeline (teammate's work — separate component):
+    - Reads JPEG frames from the whiteboard camera
+    - Diffs consecutive frames to detect structural changes
+    - Produces "visual_delta" text descriptions sent to POST /agent/process-frame
 
   MCP server tools (also available via /mcp for external callers):
     createNode, addDetailsToNode, deleteNode, addEdge, removeEdge,

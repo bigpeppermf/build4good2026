@@ -93,9 +93,8 @@ uv run pytest tests/test_graph.py
 uv run pytest --cov=core --cov=agent --cov-report=term-missing
 ```
 
-> **Note:** Tests that call the Gemini agent require `GOOGLE_API_KEY` in your
-> `.env`. Tests that only exercise `core/graph.py` or `core/session_store.py`
-> do not need an API key.
+> **Note:** No API key is needed to run the test suite. The Gemini LLM is
+> replaced with a `MagicMock` in all agent tests, so tests run fully offline.
 
 ### Frontend
 

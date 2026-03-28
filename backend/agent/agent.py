@@ -12,22 +12,22 @@ Uvicorn process.
 
 Input
 -----
-Visual only.  Periodic JPEG frames from the whiteboard camera are passed in as
-raw bytes.  Audio is intentionally excluded.
+Text only.  A ``visual_delta`` string describing what structurally changed on
+the whiteboard since the last frame is produced upstream by a separate computer
+vision pipeline and passed here as plain text.  The agent never receives raw
+image bytes or audio.
 
 Model
 -----
-Google Gemini 2.0 Flash via ``langchain-google-genai``.  The model has
-multimodal vision capability and supports function/tool calling.
+Google Gemini 2.0 Flash via ``langchain-google-genai``.
 """
 
 from __future__ import annotations
 
-import base64
 import os
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage  # noqa: F401
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -38,34 +38,35 @@ from core.graph import SystemDesignGraph
 # ------------------------------------------------------------------ #
 
 SYSTEM_PROMPT = """\
-You are a real-time system design analysis agent. You receive periodic JPEG
-frames captured from a whiteboard where a user is sketching a system
-architecture diagram.
+You are a real-time system design analysis agent. You receive periodic
+descriptions of what has visually changed on a whiteboard where a user is
+sketching a system architecture diagram. These descriptions are produced by a
+separate computer vision pipeline — you never receive raw images or audio.
 
 Your job is to maintain an accurate graph representation of the system design
 the user is building.  The graph is your source of truth.  Every time you
-receive a new frame, determine what has changed and call the appropriate graph
-mutation tool.
+receive a new visual delta, determine what has changed and call the appropriate
+graph mutation tool.
 
 Available tools
 ---------------
 - create_node(id, label, type)
-    Call when a new component appears on the whiteboard (box drawn, label
-    written, etc.).  Valid types: service, database, cache, load_balancer,
-    queue, client, storage, external.
+    Call when a new component appears (box drawn, label written, etc.).
+    Valid types: service, database, cache, load_balancer, queue, client,
+    storage, external.
 
 - add_details_to_node(id, details)
     Call when the user annotates an existing component with extra information
     (technology stack, role, scaling notes, etc.).
 
 - delete_node(id)
-    Call when a component is erased from the whiteboard.
+    Call when a component is erased.
 
 - add_edge(from_id, to_id, label)
     Call when an arrow is drawn between two components.
 
 - remove_edge(from_id, to_id)
-    Call when an arrow is erased.
+    Call when an arrow is erased or redirected.
 
 - set_entry_point(id)
     Call as soon as you identify the user-facing entry point of the system
@@ -82,15 +83,19 @@ Available tools
 Decision rules
 --------------
 1. Only call a tool when you have sufficient confidence that a structural change
-   was intended.  Do not add nodes for vague, incomplete, or ambiguous sketches.
-2. You may call multiple tools in one turn if the frame shows multiple changes.
-3. If the frame shows no visible changes from the graph's current state, do not
-   call any tools.
-4. Never fabricate nodes or edges.  Every mutation must be grounded in something
-   you visually observe in the frame.
-5. If you have received two or more consecutive frames with no structural
-   changes, respond with a Socratic question about the most critical missing
-   component in the current design.
+   was intended.  Do not add nodes for vague or ambiguous descriptions.
+2. You may call multiple tools in one turn if the delta describes multiple
+   changes.
+3. If the delta describes no new changes, do not call any tools.
+4. Never fabricate nodes or edges.  Every mutation must be grounded in the
+   visual delta you received.
+
+Input format
+------------
+{
+  "visual_delta": "<text description of what changed on the whiteboard>",
+  "current_timestamp": <milliseconds since session start>
+}
 
 Response format
 ---------------
@@ -258,7 +263,7 @@ class WhiteboardAgent:
             # Equivalent to the "Nano" tier available via the Google AI API.
             model="gemini-2.0-flash",
             temperature=0,
-            google_api_key=os.environ["GOOGLE_API_KEY"],
+            google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
         )
         self.tools = _build_tools(graph)
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -266,46 +271,37 @@ class WhiteboardAgent:
 
         # Conversation history persists across all frames in a session.
         self.message_history: list = [SystemMessage(content=SYSTEM_PROMPT)]
-        # Count consecutive frames with no graph mutations for Socratic prompting.
-        self.no_change_streak: int = 0
 
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
     # ------------------------------------------------------------------ #
 
-    def process_frame(self, frame_jpeg: bytes, timestamp_ms: int) -> str:
+    def process_frame(self, visual_delta: str, timestamp_ms: int) -> str:
         """
-        Analyze a single whiteboard JPEG frame and apply graph mutations.
+        Process a visual delta description and apply graph mutations.
+
+        The visual delta is produced upstream by a computer vision pipeline that
+        compares whiteboard frames.  This method never receives raw images.
 
         The method runs the full agentic tool-call loop synchronously:
         it keeps sending the conversation back to Gemini until the model
         returns a response with no further tool calls.
 
         Args:
-            frame_jpeg:   Raw JPEG bytes of the whiteboard frame.
+            visual_delta: Text description of what changed on the whiteboard
+                          since the previous frame (e.g. "A box labeled
+                          'API Gateway' was drawn with an arrow to 'DB'").
             timestamp_ms: Milliseconds since session start.
 
         Returns:
             One-sentence verbal response suitable for TTS output.
         """
-        image_b64 = base64.b64encode(frame_jpeg).decode()
-
         human_msg = HumanMessage(
-            content=[
-                {
-                    "type": "text",
-                    "text": (
-                        f"[t={timestamp_ms}ms] Analyze this whiteboard frame. "
-                        "Call the appropriate graph tools for any structural changes you see, "
-                        "then respond with a single sentence."
-                    ),
-                },
-                {
-                    "type": "media",
-                    "data": image_b64,
-                    "mime_type": "image/jpeg",
-                },
-            ]
+            content=(
+                f'{{"visual_delta": {visual_delta!r}, "current_timestamp": {timestamp_ms}}}\n\n'
+                "Call the appropriate graph tools for any structural changes, "
+                "then respond with a single sentence."
+            )
         )
 
         self.message_history.append(human_msg)
@@ -316,8 +312,6 @@ class WhiteboardAgent:
             self.message_history.append(response)
 
             if not response.tool_calls:
-                # Final verbal response — no more tool calls.
-                self.no_change_streak += 1
                 return response.content or "I'm watching the board — keep going."
 
             # Execute every tool call and feed results back into the conversation.
@@ -336,10 +330,8 @@ class WhiteboardAgent:
                 )
 
             self.message_history.extend(tool_messages)
-            self.no_change_streak = 0
             # Loop: let the model see the tool results and decide next action.
 
     def reset(self) -> None:
-        """Clear conversation history and streak counter for a new session."""
+        """Clear conversation history for a new session."""
         self.message_history = [SystemMessage(content=SYSTEM_PROMPT)]
-        self.no_change_streak = 0
