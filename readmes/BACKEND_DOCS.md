@@ -1,3 +1,7 @@
+**Media ingest (current frontend):** live **video + audio** as WebM `MediaRecorder` chunks over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). (Older “JPEG snapshots” flow has been removed from the UI.)
+
+---
+
 SYSTEM OVERVIEW:
 
 -Client
