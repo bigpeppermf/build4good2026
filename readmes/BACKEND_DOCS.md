@@ -1,4 +1,4 @@
-**Media ingest (current frontend):** live **video + audio** as WebM `MediaRecorder` chunks over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). The older periodic JPEG snapshot flow has been replaced in the frontend, but the backend frame-filtering module still exists as an isolated building block for future visual pipelines.
+**Media ingest (current frontend):** live **video + audio** as WebM `MediaRecorder` chunks over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). On the backend side, the image-analysis path now assumes a staged visual pipeline: accepted frames -> OCR snapshot -> `visual_delta` text -> graph agent.
 
 ---
 
@@ -29,13 +29,13 @@ The backend is now a Python service, not the old TypeScript Express server.
 There are currently two backend tracks in the repo:
 
 - The active system-design session backend
-- The new frame-processing gatekeeper that filters incoming images before more expensive work happens
+- The new visual-delta pipeline that converts relevant frame changes into text for the agent
 
 The active backend now includes a streaming contract for live practice media ingestion over WebSocket, plus AI-driven graph/session infrastructure behind the scenes.
 
 The system-design backend is responsible for managing a live architecture graph during an interview session and saving it to MongoDB when the session ends.
 
-The frame-processing module is responsible for deciding whether an incoming frame is worth keeping at all.
+The visual pipeline is responsible for deciding whether an incoming frame is worth keeping, extracting relevant text and simple structure from it, and producing a plain-English `visual_delta` string.
 
 ## Key Components
 
@@ -67,6 +67,9 @@ When a user begins, we start a timed session. Hints pause the timer and resume a
 - `backend/core/frame_processor.py`
   Filters incoming frames before any expensive downstream processing.
 
+- `backend/core/visual_delta_pipeline.py`
+  Runs OCR, groups relevant text, detects simple connections, and emits `visual_delta`.
+
 ## Current Agent / Collection Direction
 
 The recent backend changes also introduced a more real-time collection direction:
@@ -78,9 +81,9 @@ The recent backend changes also introduced a more real-time collection direction
 
 This means the backend is evolving beyond a simple “upload frame, get result” design and toward a live session pipeline.
 
-## What The Frame Processor Does
+## What The Visual Pipeline Does
 
-The frame processor is intentionally narrow right now. It only handles the early filtering pipeline.
+The visual pipeline is now the important middle layer between image input and agent reasoning.
 
 Processing order:
 
@@ -89,11 +92,15 @@ Processing order:
 3. If a person is detected, drop the frame immediately
 4. Compare the frame against the last accepted frame using a fast grayscale diff
 5. If the frame is too similar, drop it
-6. Otherwise accept it and store it as the new last accepted frame
+6. Run OCR on the accepted frame
+7. Separate OCR text into likely component labels and nearby annotation text
+8. Detect simple line-based connections between components
+9. Compare the current OCR snapshot to the last accepted OCR snapshot
+10. Generate a plain-English `visual_delta` string
 
-This means the backend now has a cheap gatekeeper in front of future heavy tasks like OCR, system extraction, or evaluation.
+This means the backend now has a real staged path for visual understanding instead of sending raw frames straight into the graph agent.
 
-## What Is Implemented In The Frame Processor
+## What Is Implemented In The Visual Pipeline
 
 - Accepts image input as base64, bytes, or a NumPy array
 - Uses OpenCV to decode images
@@ -101,16 +108,19 @@ This means the backend now has a cheap gatekeeper in front of future heavy tasks
 - Only checks for the `person` class
 - Uses grayscale + resize + mean absolute difference for fast similarity checks
 - Compares new frames only against the last accepted frame
-- Returns `None` for discarded frames
-- Returns a minimal payload with `timestamp` and encoded image bytes for accepted frames
+- Uses local `tesseract` OCR on accepted frames
+- Detects component text, nearby annotation text, and simple connections
+- Produces `visual_delta` strings such as:
+  - `A box labeled 'Redis Cache' was drawn with an arrow from 'API Service'.`
+  - `Text '3 replicas' was added near 'API Service'.`
+  - `An arrow was drawn from 'Browser' to 'API'.`
 
-## What Is Not Implemented Yet
+## What Is Still Rough
 
-- OCR
-- Whiteboard structure extraction
-- Architecture understanding from filtered frames
-- Graph creation directly from visual input
-- External API calls from the frame filter itself
+- OCR grouping is heuristic, not production-grade
+- Arrow detection is still simple line proximity logic
+- Annotation-to-component attachment is approximate
+- The pipeline is good for iteration, but real whiteboard footage will need tuning
 
 ## Environment Variables
 
@@ -127,13 +137,14 @@ The backend dependency list now includes the packages needed for the frame pipel
 - `numpy`
 - `opencv-python`
 - `ultralytics`
+- local `tesseract`
 
 The packaging config in `backend/pyproject.toml` was also updated so editable installs work with the current multi-package backend layout.
 
 ## Recommended Next Backend Steps
 
-- Connect `FrameProcessor.process_frame(...)` to a real backend entrypoint if we still want a filtered-frame path
-- Decide whether the new live media stream fully replaces periodic image-frame ingestion
-- Add tests for base64 decode, diff threshold behavior, last accepted frame state behavior, and the person-detected discard path
-- Decide where YOLO weights should be cached in local and deployed environments
-- Decide whether accepted images should stay as raw bytes or be normalized to one standard format across the pipeline
+- Tune OCR preprocessing on real whiteboard frames
+- Improve connection detection beyond simple Hough-line proximity
+- Improve annotation attachment so notes are more reliably linked to the correct component
+- Add end-to-end tests using saved image sequences
+- Decide how the WebSocket media stream should hand frames into this pipeline in production

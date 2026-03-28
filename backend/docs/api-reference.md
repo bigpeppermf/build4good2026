@@ -6,14 +6,14 @@ Complete reference for all MCP tools, HTTP endpoints, and core classes in the sy
 
 ## Overview
 
-This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — the Gemini vision agent watches JPEG frames and builds a graph of the design as it unfolds. **Audio is not used; analysis is visual-only.** When the session ends, the graph is persisted to MongoDB for scoring and comparison.
+This backend supports a real-time system design analysis tool. A user draws components on a whiteboard, the backend filters and OCRs accepted frames, generates a plain-English `visual_delta`, and the Gemini agent uses that text to build the graph. When the session ends, the graph is persisted to MongoDB for scoring and comparison.
 
 ### Three surfaces, two callers
 
 | Surface | Caller | Purpose |
 |---------|--------|---------|
 | MCP tools (`/mcp`) | External MCP clients | Mutate and inspect the graph via the MCP protocol |
-| `POST /agent/process-frame` | Frontend | Send a JPEG frame to the Gemini agent for real-time analysis |
+| `POST /agent/process-frame` | Frontend | Send a JPEG frame through the visual-delta pipeline and then into the agent |
 | `POST /end-session` | Frontend | Persist the completed graph to MongoDB |
 
 ### Tool categories
@@ -32,10 +32,12 @@ This backend supports a real-time system design analysis tool. A user draws comp
 backend/
   agent/
     __init__.py       # Exports WhiteboardAgent
-    agent.py          # LangChain + Gemini vision agent (visual-only)
+    agent.py          # LangChain + Gemini agent that consumes visual_delta text
   core/
+    frame_processor.py      # Frame gating: person filter + diff filter
     graph.py          # SystemDesignGraph — in-memory graph data structure
     session_store.py  # SessionStore — MongoDB write logic
+    visual_delta_pipeline.py  # OCR + connection detection + visual_delta generation
   graph_mcp/
     server.py         # FastMCP server, all MCP tools, HTTP endpoints
   main.py             # Entry point
@@ -55,6 +57,19 @@ uv run main.py
 # Process frame: POST http://localhost:8000/agent/process-frame
 # End session  : POST http://localhost:8000/end-session
 ```
+
+### `/agent/process-frame` internal pipeline
+
+The backend currently processes frames in this order:
+
+1. Decode frame
+2. Reject frame if a person is visible
+3. Reject frame if it is too similar to the last accepted frame
+4. Run OCR on the accepted frame
+5. Extract component text, nearby annotation text, and simple connections
+6. Compare against the previous accepted OCR snapshot
+7. Generate a plain-English `visual_delta`
+8. Pass that `visual_delta` text into the Gemini agent
 
 ---
 

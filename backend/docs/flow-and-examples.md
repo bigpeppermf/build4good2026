@@ -1,6 +1,6 @@
 # Flow & Examples
 
-How the system works end-to-end, with worked examples showing real AI tool call sequences.
+How the system works end-to-end, with worked examples showing how frames become `visual_delta` text and then graph mutations.
 
 ---
 
@@ -8,11 +8,16 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  User draws on whiteboard + speaks                                  │
+│  User draws on whiteboard                                           │
 │           │                                                         │
 │           ▼                                                         │
-│     AI Agent (Claude)                                               │
-│     Receives: { visual_delta, audio_transcription, timestamp }      │
+│  Frame filter + OCR + change describer                              │
+│  Receives: JPEG frame                                               │
+│  Produces: { visual_delta, labels, annotations, connections }       │
+│           │                                                         │
+│           ▼                                                         │
+│     AI Agent (Gemini)                                               │
+│     Receives: { visual_delta, timestamp }                           │
 │           │                                                         │
 │     Decides which graph operations to call                          │
 │           │                                                         │
@@ -36,19 +41,21 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 
 ---
 
-## The Three Phases
+## The Four Phases
 
-### Phase 1 — Live session (in-memory only)
+### Phase 1 — Frame gating
 
-The server starts and creates a single empty `SystemDesignGraph` object and a UUID for this session. Nothing touches MongoDB yet.
+Incoming frames are decoded, checked for people, and compared against the last accepted frame. Frames with people or no meaningful visual change are discarded immediately.
 
-As the user draws and speaks, the AI sends MCP tool calls. Each call is a function execution in Python that mutates the in-memory graph. These are instantaneous — no I/O, no network, just Python dict operations.
+### Phase 2 — OCR snapshot and visual_delta generation
 
-### Phase 2 — BFS at session end
+Accepted frames go through OCR and simple visual-structure extraction. The backend compares the current OCR snapshot to the previous accepted OCR snapshot and turns that difference into a plain-English `visual_delta`.
 
-When the frontend calls `POST /end-session`, the server runs a BFS traversal starting from whichever node was set as the entry point. This walk produces `traversal_order` — the list of node IDs in logical sequence from the user-facing entry inward.
+### Phase 3 — Agent-driven graph mutation
 
-### Phase 3 — MongoDB write
+The Gemini agent receives the `visual_delta` text and decides which graph tools to call. Each tool call mutates the in-memory graph.
+
+### Phase 4 — MongoDB write
 
 The `SessionStore` makes two writes:
 1. One **session document** — the skeleton (edges + traversal order)
