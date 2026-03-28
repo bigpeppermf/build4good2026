@@ -40,8 +40,8 @@ DURING SESSION:
     - gives a suggestion communicates that to front end for display.
 
  -review
--gives a grade and reveals improvements to make displayed on front end
--decides based on grade if it will ask follow up or ask for implemented correction 
+  -gives a grade and reveals improvements to make displayed on front end
+  -decides based on grade if it will ask follow up or ask for implemented correction 
 
 
 
