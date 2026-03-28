@@ -1,6 +1,6 @@
 SYSTEM OVERVIEW :
 
--Slient
+-Client
 - ↓
 -Session Service (timer + state)
 - ↓
