@@ -6,14 +6,15 @@ Complete reference for all MCP tools, HTTP endpoints, and core classes in the sy
 
 ## Overview
 
-This backend supports a real-time system design analysis tool. A user draws components on a whiteboard and speaks — an AI agent watches both and builds a graph of the design as it unfolds. When the session ends, the graph is persisted to MongoDB for scoring and comparison.
+This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — the Gemini vision agent watches JPEG frames and builds a graph of the design as it unfolds. **Audio is not used; analysis is visual-only.** When the session ends, the graph is persisted to MongoDB for scoring and comparison.
 
-### Two surfaces, two callers
+### Three surfaces, two callers
 
 | Surface | Caller | Purpose |
 |---------|--------|---------|
-| MCP tools (`/mcp`) | AI agent only | Mutate and inspect the graph in real time |
-| HTTP endpoint (`/end-session`) | Frontend only | Persist the completed graph to MongoDB |
+| MCP tools (`/mcp`) | External MCP clients | Mutate and inspect the graph via the MCP protocol |
+| `POST /agent/process-frame` | Frontend | Send a JPEG frame to the Gemini agent for real-time analysis |
+| `POST /end-session` | Frontend | Persist the completed graph to MongoDB |
 
 ### Tool categories
 
@@ -29,13 +30,16 @@ This backend supports a real-time system design analysis tool. A user draws comp
 
 ```
 backend/
+  agent/
+    __init__.py       # Exports WhiteboardAgent
+    agent.py          # LangChain + Gemini vision agent (visual-only)
   core/
     graph.py          # SystemDesignGraph — in-memory graph data structure
     session_store.py  # SessionStore — MongoDB write logic
   graph_mcp/
-    server.py         # FastMCP server, all tools, /end-session endpoint
+    server.py         # FastMCP server, all MCP tools, HTTP endpoints
   main.py             # Entry point
-  .env                # MONGODB_URI (not committed)
+  .env                # MONGODB_URI + GOOGLE_API_KEY (not committed)
 ```
 
 ### Running the server
@@ -43,11 +47,13 @@ backend/
 ```bash
 # Fill in .env first:
 # MONGODB_URI=mongodb+srv://<user>:<pass>@benji-cluster.hgust9k.mongodb.net/...
+# GOOGLE_API_KEY=your_google_api_key_here
 
 uv run main.py
-# Session ID : <uuid>
-# MCP        : http://localhost:8000/mcp
-# End session: POST http://localhost:8000/end-session
+# Session ID   : <uuid>
+# MCP          : http://localhost:8000/mcp
+# Process frame: POST http://localhost:8000/agent/process-frame
+# End session  : POST http://localhost:8000/end-session
 ```
 
 ---
@@ -318,7 +324,46 @@ Return a snapshot of the full current graph. Use this to fact-check the topology
 
 ## HTTP Endpoints
 
-HTTP endpoints are called directly by the **frontend**, not by the AI agent.
+HTTP endpoints are called directly by the **frontend**, not via the MCP protocol.
+
+---
+
+### `POST /agent/process-frame`
+
+Send a motion-triggered JPEG frame to the Gemini vision agent. The agent analyzes the frame, calls any necessary graph mutation tools (same operations as the MCP tools), and returns a one-sentence verbal response.
+
+**Audio is not sent or used. Analysis is visual-only.**
+
+**Request:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `frame` | binary (JPEG) | Yes | Raw JPEG bytes of the whiteboard frame. |
+| `timestamp_ms` | string (integer) | No | Milliseconds since session start. Defaults to `0`. |
+
+**Response (200)**
+```json
+{
+  "verbal_response": "Got it — I've added the API Gateway and connected it to the load balancer.",
+  "timestamp_ms": 4200
+}
+```
+
+**Response (400)**
+```json
+{ "error": "Missing or invalid 'frame' field." }
+```
+
+**Response (500)**
+```json
+{ "error": "<exception message>" }
+```
+
+**Agent behaviour**
+- Maintains conversation history across all frames for the session (context persists).
+- Calls graph mutation tools (`create_node`, `add_edge`, etc.) when it detects structural changes.
+- Returns a Socratic question if two or more consecutive frames show no changes.
+- Never fabricates nodes or edges — every mutation is grounded in visual evidence.
 
 ---
 

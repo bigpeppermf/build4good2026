@@ -1,16 +1,19 @@
 """
 MCP server for real-time system design graph mutation.
 
-MCP tools (AI-callable):
-  - createNode       — register a new component
-  - addDetailsToNode — annotate an existing component
-  - deleteNode       — remove a component and its edges
-  - addEdge          — connect two components
-  - removeEdge       — disconnect two components
-  - getGraphState    — inspect current graph (nodes + edges)
+MCP tools (AI-callable via /mcp):
+  - createNode           — register a new component
+  - addDetailsToNode     — annotate an existing component
+  - deleteNode           — remove a component and its edges
+  - addEdge              — connect two components
+  - removeEdge           — disconnect two components
+  - setEntryPoint        — designate the BFS traversal root
+  - insertNodeBetween    — atomically insert a node between two connected nodes
+  - getGraphState        — inspect current graph (nodes + edges)
 
 HTTP endpoints (frontend-callable, not AI tools):
-  POST /end-session  — saves the completed graph to MongoDB and returns a summary
+  POST /agent/process-frame  — send a JPEG frame to the Gemini agent for analysis
+  POST /end-session          — saves the completed graph to MongoDB
 
 Run:
     uv run main.py
@@ -22,9 +25,11 @@ import uuid
 import uvicorn
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from agent import WhiteboardAgent
 from core.graph import SystemDesignGraph
 from core.session_store import SessionStore
 
@@ -37,6 +42,10 @@ load_dotenv()
 _graph = SystemDesignGraph()
 _session_id = str(uuid.uuid4())
 _store = SessionStore(uri=os.environ["MONGODB_URI"])
+
+# One agent instance per server process — persists conversation history
+# across frames for the lifetime of the session.
+_agent = WhiteboardAgent(_graph)
 
 # ------------------------------------------------------------------ #
 # MCP server + tools                                                   #
@@ -191,8 +200,39 @@ def getGraphState() -> dict:
 
 
 # ------------------------------------------------------------------ #
-# HTTP endpoint — session end (not an MCP tool)                        #
+# HTTP endpoints (not MCP tools)                                       #
 # ------------------------------------------------------------------ #
+
+async def process_frame(request: Request) -> JSONResponse:
+    """
+    POST /agent/process-frame
+    Called by the frontend each time a motion-triggered JPEG is captured.
+    Passes the frame to the Gemini vision agent which calls graph mutation
+    tools as needed and returns a one-sentence verbal response.
+
+    Form fields:
+        frame        — JPEG file (binary)
+        timestamp_ms — milliseconds since session start (integer string)
+    """
+    try:
+        form = await request.form()
+        frame_upload = form.get("frame")
+        raw_ts = form.get("timestamp_ms", "0")
+        timestamp_ms = int(raw_ts) if isinstance(raw_ts, str) else 0
+
+        if not isinstance(frame_upload, UploadFile):
+            return JSONResponse({"error": "Missing or invalid 'frame' field."}, status_code=400)
+
+        frame_bytes: bytes = await frame_upload.read()
+        if not frame_bytes:
+            return JSONResponse({"error": "Empty frame."}, status_code=400)
+
+        verbal_response = _agent.process_frame(frame_bytes, timestamp_ms)
+        return JSONResponse({"verbal_response": verbal_response, "timestamp_ms": timestamp_ms})
+
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
 
 async def end_session(_request: Request) -> JSONResponse:
     """
@@ -212,11 +252,13 @@ async def end_session(_request: Request) -> JSONResponse:
 # ------------------------------------------------------------------ #
 
 app = mcp.http_app()
+app.add_route("/agent/process-frame", process_frame, methods=["POST"])
 app.add_route("/end-session", end_session, methods=["POST"])
 
 
 def serve() -> None:
-    print(f"Session ID : {_session_id}")
-    print("MCP        : http://localhost:8000/mcp")
-    print("End session: POST http://localhost:8000/end-session")
+    print(f"Session ID   : {_session_id}")
+    print("MCP          : http://localhost:8000/mcp")
+    print("Process frame: POST http://localhost:8000/agent/process-frame")
+    print("End session  : POST http://localhost:8000/end-session")
     uvicorn.run(app, host="0.0.0.0", port=8000)

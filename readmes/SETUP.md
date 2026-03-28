@@ -1,34 +1,140 @@
 # Setup and development
 
-Monorepo skeleton: **frontend** (Vite + Vue 3 + TypeScript) and **backend** (Express + TypeScript).
+Two independent servers:
 
-## Setup
+| Server | Stack | Port |
+|--------|-------|------|
+| **Backend** | Python 3.12 + FastMCP + Uvicorn | 8000 |
+| **Frontend** | Vite + Vue 3 + TypeScript | 5173 |
+
+---
+
+## Prerequisites
+
+- **Python 3.12+** with [uv](https://docs.astral.sh/uv/) (`brew install uv` or `pip install uv`)
+- **Node.js 18+** with npm
+
+---
+
+## First-time setup
 
 ```bash
+# 1. Copy env template and fill in values
 cp .env.example .env
+#    Required keys:
+#      MONGODB_URI     — MongoDB Atlas connection string
+#      GOOGLE_API_KEY  — Google AI Studio key (aistudio.google.com/apikey)
+
+# 2. Install Python dependencies (creates backend/.venv automatically)
+cd backend
+uv sync
+cd ..
+
+# 3. Install frontend dependencies
+cd frontend
 npm install
+cd ..
 ```
 
-## Dev
+---
+
+## Running the servers
+
+Each server must be started in its own terminal.
+
+### Backend (Python MCP server + Gemini agent)
 
 ```bash
+cd backend
+uv run main.py
+```
+
+Expected output:
+```
+Session ID   : <uuid>
+MCP          : http://localhost:8000/mcp
+Process frame: POST http://localhost:8000/agent/process-frame
+End session  : POST http://localhost:8000/end-session
+```
+
+### Frontend (Vue dev server)
+
+```bash
+cd frontend
 npm run dev
 ```
 
-- Web: http://localhost:5173 (proxies `/api` → backend)
-- API: http://localhost:3001
+Open **http://localhost:5173** in your browser.
 
-Or run one side: `npm run dev:web` / `npm run dev:api`
+> The Vite dev server proxies `/api/*` → `http://localhost:8000/*` so the
+> frontend talks to the Python backend without CORS issues.
 
-## Build
+---
+
+## Running tests
+
+### Backend
+
+Tests live in `backend/tests/` and use **pytest**.
 
 ```bash
-npm run build
+cd backend
+
+# Run all tests
+uv run pytest
+
+# Run with verbose output
+uv run pytest -v
+
+# Run a single file
+uv run pytest tests/test_graph.py
+
+# Run with coverage report
+uv run pytest --cov=core --cov=agent --cov-report=term-missing
 ```
 
-Run API after build: `npm run start -w backend`
+> **Note:** Tests that call the Gemini agent require `GOOGLE_API_KEY` in your
+> `.env`. Tests that only exercise `core/graph.py` or `core/session_store.py`
+> do not need an API key.
+
+### Frontend
+
+```bash
+cd frontend
+
+# Type-check only (no test runner configured yet)
+npm run type-check
+
+# Lint
+npm run lint
+```
+
+---
 
 ## Layout
 
-- `frontend/` — UI
-- `backend/` — HTTP API (`/api/health` wired as a smoke check)
+```
+build4good2026/
+├── backend/              # Python backend
+│   ├── agent/            # LangChain + Gemini vision agent
+│   ├── core/             # In-memory graph + MongoDB session store
+│   ├── graph_mcp/        # FastMCP server + HTTP endpoints
+│   ├── docs/             # API reference + flow examples
+│   ├── tests/            # pytest test suite
+│   ├── main.py           # Entry point  →  uv run main.py
+│   └── pyproject.toml    # Python dependencies
+│
+├── frontend/             # Vue 3 frontend
+│   ├── src/
+│   │   ├── composables/  # useWhiteboardSession (camera + frame capture)
+│   │   ├── views/        # DashboardView, HomeView
+│   │   └── types/        # Shared TypeScript types
+│   ├── vite.config.ts    # Proxy: /api → localhost:8000
+│   └── package.json
+│
+├── readmes/              # Project-level documentation
+│   ├── SETUP.md          # This file
+│   └── BACKEND_DOCS.md   # System overview and component descriptions
+│
+└── .env.example          # Template for required environment variables
+```

@@ -1,4 +1,4 @@
-SYSTEM OVERVIEW :
+SYSTEM OVERVIEW:
 
 -Client
 - ↓
@@ -6,43 +6,60 @@ SYSTEM OVERVIEW :
 - ↓
 -Question Service (select + lock question)
 - ↓
--Collection Phase (Benji → structured design)
+-Collection Phase (Benji → structured design)  [VISUAL FRAMES ONLY]
 - ↓
 -Evaluation Pipeline (hint/review)
 - ↓
 -AI Evaluation Service
 - ↓
 -Response (hint / score / next step)
-    
 
 
 KEY COMPONENTS-
 
-When a user wants to begin we will start a SESSION, sessions are 10 minutes. hint will stop timer and resume after hint is generated, review will end timer.   
+When a user wants to begin we will start a SESSION, sessions are 10 minutes.
+Hint will stop timer and resume after hint is generated. Review will end timer.
 
 -QUESTION BANK
-  - contains all archetecures
-  - must be able to be read by ai
+  - contains all architectures
+  - must be able to be read by AI
   - consistent with format
-  - 5 for testing 
-  - randomizer that sends one to the front end, keeps it in mind the whole session so we can acess the correct solution
+  - 5 for testing
+  - randomizer that sends one to the front end, keeps it in mind the whole
+    session so we can access the correct solution
 
 DURING SESSION:
 
+-COLLECTION PHASE (handled by Benji / WhiteboardAgent):
+  - input: periodically captured JPEG frames from the whiteboard camera
+    NOTE: audio is NOT used. Analysis is visual-only.
+  - Output: a mapped-out architecture in the same format as the question bank,
+    built incrementally by the AI agent calling graph mutation tools.
 
--COLLECTION PHASE(handled by benji) :
-  - input: periodicly taken images and constant audio
-  - Output: a mapped out archetecture in the same fomart as the one in the question bank 
+  Agent architecture:
+    - Model: Google Gemini 2.0 Flash (multimodal vision + tool calling)
+    - Framework: LangChain (langchain-google-genai)
+    - Tools: LangChain @tool wrappers around the in-process SystemDesignGraph
+      (functionally identical to the MCP tools exposed at /mcp)
+    - State: conversation history persists across frames for the session
+    - Endpoint: POST /agent/process-frame
+      - form fields: frame (JPEG bytes), timestamp_ms (int)
+      - response: { "verbal_response": "...", "timestamp_ms": N }
+
+  MCP server tools (also available via /mcp for external callers):
+    createNode, addDetailsToNode, deleteNode, addEdge, removeEdge,
+    setEntryPoint, insertNodeBetween, getGraphState
+
+-REVIEW OR HINT (sends user map and solution map for eval.):
+  - hint
+    - gives a suggestion, communicates that to front end for display.
+
+  - review
+    - gives a grade and reveals improvements to make displayed on front end
+    - decides based on grade if it will ask follow up or ask for
+      implemented correction
 
 
--REVIEW OR HINT (sends user map and solution map for eval.) :
- - hint 
-    - gives a suggestion communicates that to front end for display.
-
- -review
-  -gives a grade and reveals improvements to make displayed on front end
-  -decides based on grade if it will ask follow up or ask for implemented correction 
-
-
-
-
+ENVIRONMENT VARIABLES (backend/.env):
+  MONGODB_URI      — MongoDB Atlas connection string
+  GOOGLE_API_KEY   — Google AI Studio key for Gemini access
