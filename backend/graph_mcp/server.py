@@ -12,7 +12,7 @@ MCP tools (AI-callable via /mcp):
   - getGraphState        — inspect current graph (nodes + edges)
 
 HTTP endpoints (frontend-callable, not AI tools):
-  POST /agent/process-frame  — send a JPEG frame to the Gemini agent for analysis
+  POST /agent/process-frame  — send a JPEG frame through the visual_delta pipeline
   POST /end-session          — saves the completed graph to MongoDB
 
 Run:
@@ -32,6 +32,7 @@ from starlette.responses import JSONResponse
 from agent import WhiteboardAgent
 from core.graph import SystemDesignGraph
 from core.session_store import SessionStore
+from core.visual_delta_pipeline import VisualDeltaPipeline
 
 load_dotenv()
 
@@ -42,6 +43,7 @@ load_dotenv()
 _graph = SystemDesignGraph()
 _session_id = str(uuid.uuid4())
 _store = SessionStore(uri=os.environ["MONGODB_URI"])
+_visual_delta_pipeline = VisualDeltaPipeline()
 
 # One agent instance per server process — persists conversation history
 # across frames for the lifetime of the session.
@@ -207,8 +209,9 @@ async def process_frame(request: Request) -> JSONResponse:
     """
     POST /agent/process-frame
     Called by the frontend each time a motion-triggered JPEG is captured.
-    Passes the frame to the Gemini vision agent which calls graph mutation
-    tools as needed and returns a one-sentence verbal response.
+    Runs the frame through the visual-delta pipeline:
+    live image feed -> valid frames with changes -> OCR -> change description ->
+    visual_delta. The resulting visual_delta text is then passed to the agent.
 
     Form fields:
         frame        — JPEG file (binary)
@@ -227,8 +230,21 @@ async def process_frame(request: Request) -> JSONResponse:
         if not frame_bytes:
             return JSONResponse({"error": "Empty frame."}, status_code=400)
 
-        verbal_response = _agent.process_frame(frame_bytes, timestamp_ms)
-        return JSONResponse({"verbal_response": verbal_response, "timestamp_ms": timestamp_ms})
+        pipeline_result = _visual_delta_pipeline.process_frame(frame_bytes, timestamp_ms)
+        if pipeline_result is None:
+            return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
+
+        verbal_response = _agent.process_visual_delta(pipeline_result["visual_delta"], timestamp_ms)
+        return JSONResponse(
+            {
+                "verbal_response": verbal_response,
+                "visual_delta": pipeline_result["visual_delta"],
+                "labels": pipeline_result["labels"],
+                "annotations": pipeline_result["annotations"],
+                "connections": pipeline_result["connections"],
+                "timestamp_ms": timestamp_ms,
+            }
+        )
 
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)

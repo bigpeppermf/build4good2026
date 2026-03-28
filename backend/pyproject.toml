@@ -23,4 +23,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["core", "graph_mcp"]
+packages = ["agent", "core", "graph_mcp"]
