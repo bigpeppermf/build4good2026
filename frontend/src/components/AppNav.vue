@@ -5,178 +5,138 @@ const route = useRoute();
 </script>
 
 <template>
-  <header
-    class="nav-float"
+  <aside
+    class="sidebar"
     aria-label="Site"
   >
-    <div class="nav-card">
-      <p
-        class="nav-meta"
-        aria-hidden="true"
-      >
-        Index
-      </p>
+    <div class="sidebar-user">
+      <div class="user-avatar" aria-hidden="true" />
+      <span class="user-name">User</span>
+    </div>
+
+    <nav class="sidebar-nav" aria-label="Main">
       <RouterLink
         to="/"
-        class="nav-brand"
+        class="nav-link"
         :aria-current="route.name === 'home' ? 'page' : undefined"
       >
         Home
       </RouterLink>
-      <nav
-        class="nav-actions"
-        aria-label="Main"
+      <RouterLink
+        :to="{ name: 'dashboard' }"
+        class="nav-link"
+        :aria-current="route.name === 'dashboard' ? 'page' : undefined"
       >
-        <RouterLink
-          :to="{ name: 'dashboard' }"
-          class="btn-dashboard"
-          :aria-current="route.name === 'dashboard' ? 'page' : undefined"
-        >
-          Dashboard
-        </RouterLink>
-      </nav>
-    </div>
-  </header>
+        Dashboard
+      </RouterLink>
+    </nav>
+  </aside>
 </template>
 
 <style scoped>
-.nav-float {
+.sidebar {
   position: fixed;
-  top: max(0.75rem, env(safe-area-inset-top, 0px));
-  right: max(0.75rem, env(safe-area-inset-right, 0px));
+  top: 0;
+  left: 0;
+  bottom: 0;
   z-index: 50;
-  pointer-events: none;
-}
-
-.nav-card {
-  pointer-events: auto;
+  width: var(--sidebar-width, 13rem);
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 0.4rem;
-  min-width: min(10rem, calc(100vw - 1.5rem - env(safe-area-inset-right, 0px)));
-  max-width: calc(100vw - 1.5rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
-  padding: 0.5rem 0.6rem 0.6rem;
+  padding: clamp(1rem, 3vw, 1.5rem) 0.75rem;
   background: var(--bg-elevated);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border: 1px solid var(--rose-line);
-  border-radius: 4px;
+  border-right: 1px solid var(--rose-line);
   box-shadow:
-    0 24px 56px -28px rgb(0 0 0 / 0.55),
-    0 0 0 1px rgb(255 255 255 / 0.05) inset;
+    1px 0 0 rgb(255 255 255 / 0.05) inset,
+    4px 0 24px -8px rgb(0 0 0 / 0.35);
 }
 
-.nav-meta {
-  margin: 0;
-  padding: 0 0.35rem 0.4rem;
-  font-family: var(--font-mono);
-  font-size: 0.5625rem;
-  font-weight: 500;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.5rem 1rem;
+  margin-bottom: 0.75rem;
   border-bottom: 1px solid var(--line);
 }
 
-.nav-brand {
+.user-avatar {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: var(--line-strong, rgb(255 255 255 / 0.12));
+}
+
+.user-name {
+  font-family: var(--font-sans);
+  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.nav-link {
   display: flex;
   align-items: center;
-  justify-content: center;
-  min-height: 2.75rem;
-  padding: 0.35rem 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.65rem;
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
+  font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
   font-weight: 500;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--ink);
+  color: var(--ink-muted);
   text-decoration: none;
-  text-align: center;
-  border-radius: 3px;
+  border-radius: 4px;
   transition:
     background 0.15s ease,
     color 0.15s ease;
 }
 
-.nav-brand:hover {
+.nav-link:hover {
   background: var(--accent-soft);
   color: var(--accent-hover);
 }
 
-.nav-brand[aria-current="page"] {
+.nav-link[aria-current="page"] {
   background: rgb(255 255 255 / 0.06);
-  color: var(--accent-hover);
+  color: var(--ink);
+  font-weight: 600;
 }
 
-.nav-brand:focus-visible,
-.btn-dashboard:focus-visible {
+.nav-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.nav-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.btn-dashboard {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.75rem;
-  padding: 0.45rem 0.65rem;
-  font-family: var(--font-display);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  text-decoration: none;
-  text-align: center;
-  color: var(--void);
-  background: var(--ink);
-  border: 1px solid rgb(255 255 255 / 0.1);
-  border-radius: 4px;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    transform 0.15s ease,
-    color 0.15s ease;
-}
-
-.btn-dashboard:hover {
-  background: #f2f5f1;
-  border-color: rgb(255 255 255 / 0.18);
-  transform: translateY(-1px);
-}
-
-.btn-dashboard[aria-current="page"] {
-  background: var(--pop);
-  border-color: var(--pop);
-  color: var(--void);
-}
-
 @media (max-width: 480px) {
-  .nav-float {
-    top: max(0.5rem, env(safe-area-inset-top, 0px));
-    right: max(0.5rem, env(safe-area-inset-right, 0px));
+  .sidebar {
+    width: var(--sidebar-width, 10rem);
+    padding: 0.75rem 0.5rem;
   }
 
-  .nav-card {
-    min-width: min(9rem, calc(100vw - 1.25rem));
-    padding: 0.45rem 0.5rem 0.55rem;
+  .sidebar-user {
+    padding: 0.4rem 0.4rem 0.75rem;
   }
 
-  .nav-brand,
-  .btn-dashboard {
-    min-height: 2.625rem;
+  .user-avatar {
+    width: 1.75rem;
+    height: 1.75rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .btn-dashboard:hover {
-    transform: none;
+  .nav-link:hover {
+    transition: none;
   }
 }
 </style>

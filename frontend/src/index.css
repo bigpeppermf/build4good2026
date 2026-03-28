@@ -5,7 +5,7 @@
   --font-display: "Syne", var(--font-sans);
   --font-serif: "Cormorant Garamond", ui-serif, Georgia, "Times New Roman", serif;
   --font-sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-mono: "Gelasio", serif;
 
   /* Layout — fluid page gutters + space for floating nav (top-right) */
   --page-pad-x: clamp(1rem, 4.5vw, 2rem);

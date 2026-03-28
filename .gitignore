@@ -9,3 +9,6 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
+*.egg-info/

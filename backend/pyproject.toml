@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "Backend services for real-time system design interview sessions"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,8 +15,11 @@ dependencies = [
     "langchain-google-genai>=2.0",
     "mcp>=1.26.0",
     "motor>=3.7.1",
+    "numpy>=2.2.4",
+    "opencv-python>=4.11.0.86",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.9",
+    "ultralytics>=8.3.99",
 ]
 
 [tool.uv]
@@ -23,4 +30,7 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["core", "graph_mcp"]
 

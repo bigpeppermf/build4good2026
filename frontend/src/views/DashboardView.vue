@@ -13,33 +13,36 @@ const {
   isSettingUp,
   isSessionActive,
   errorMessage,
-  capturedFrames,
-  lastMotionMean,
   uploadMessage,
   uploadOk,
   uploadState,
-  audioPlaybackUrl,
-  thumbUrls,
+  sessionPlaybackUrl,
+  streamWsConnected,
+  chunksSentCount,
   sessionTimeLabel,
   startSession,
   stopSession,
 } = useWhiteboardSession();
+
+const cameraOpen = ref(false);
+
+function handleSetup() {
+  cameraOpen.value = true;
+  startSession();
+}
+
+function handleClose() {
+  stopSession();
+  cameraOpen.value = false;
+}
 </script>
 
 <template>
   <div class="dashboard">
     <div class="dashboard-inner">
-      <p class="dashboard-label">
-        Dashboard
-      </p>
       <h1 class="dashboard-title">
         Practice session
       </h1>
-      <p class="dashboard-copy">
-        Point the camera at your whiteboard. Audio is recorded for the whole session;
-        still frames are captured only when the board changes enough, so the server
-        gets motion context without full video.
-      </p>
 
       <section
         class="capture"
@@ -53,9 +56,9 @@ const {
         </h2>
         <p class="capture-hint">
           Setup asks for camera and microphone. Prefer the rear/environment camera on
-          a phone. Use the on-screen frame to fit your whiteboard; the timer runs while
-          the session is recording. Stop ends capture, then the app tries to upload audio
-          plus JPEG keyframes (see root README → Contexts for the API shape).
+          a phone. Use the frame overlay to align the board. The timer runs while the
+          session is live. Stop flushes the recorder and closes the stream—see README
+          for the WebSocket contract your backend should implement.
         </p>
 
         <div class="capture-actions">
@@ -63,23 +66,67 @@ const {
             type="button"
             class="btn-setup"
             :disabled="isSettingUp || isSessionActive"
-            @click="startSession"
+            @click="handleSetup"
           >
             {{ isSettingUp ? "Opening camera…" : "Setup" }}
-          </button>
-          <button
-            type="button"
-            class="btn-stop"
-            :disabled="!isSessionActive"
-            @click="stopSession"
-          >
-            Stop session
           </button>
         </div>
 
         <p
-          v-if="errorMessage"
+          v-if="errorMessage && !cameraOpen"
           class="capture-error"
+          role="alert"
+        >
+          {{ errorMessage }}
+        </p>
+
+        <p
+          v-if="uploadState === 'uploading'"
+          class="upload-status"
+        >
+          Ending session…
+        </p>
+        <p
+          v-else-if="uploadMessage"
+          class="upload-status"
+          :class="{ ok: uploadOk === true }"
+        >
+          {{ uploadMessage }}
+        </p>
+
+        <div
+          v-if="sessionPlaybackUrl"
+          class="playback"
+        >
+          <p class="playback-label">
+            Local replay (same WebM the browser recorded)
+          </p>
+          <video
+            class="playback-video"
+            controls
+            playsinline
+            :src="sessionPlaybackUrl"
+          />
+        </div>
+
+    <!-- Fullscreen camera overlay -->
+    <Teleport to="body">
+      <div
+        v-if="cameraOpen"
+        class="camera-overlay"
+      >
+        <button
+          type="button"
+          class="camera-close"
+          aria-label="Close camera"
+          @click="handleClose"
+        >
+          &times;
+        </button>
+
+        <p
+          v-if="errorMessage"
+          class="camera-error"
           role="alert"
         >
           {{ errorMessage }}
@@ -87,33 +134,21 @@ const {
 
         <div
           v-if="isSessionActive"
-          class="session-stats"
+          class="camera-stats"
           aria-live="polite"
         >
-          <span class="stat">Board snapshots: {{ capturedFrames.length }}</span>
-          <span
-            class="stats-sep"
-            aria-hidden="true"
-          >·</span>
-          <span class="stat">Motion (analysis): {{ lastMotionMean.toFixed(1) }}</span>
-          <span
-            class="stats-sep stats-sep--timer"
-            aria-hidden="true"
-          >·</span>
-          <span
-            class="stat stat-timer"
-            role="status"
-            :aria-label="`Elapsed time ${sessionTimeLabel}`"
-          >{{ sessionTimeLabel }}</span>
+          <span class="stat">Stream: {{ streamWsConnected ? "connected" : "…" }}</span>
+          <span class="stats-sep" aria-hidden="true">·</span>
+          <span class="stat">Chunks sent: {{ chunksSentCount }}</span>
         </div>
 
         <div
           v-show="activeStream"
-          class="preview-wrap"
+          class="camera-preview"
         >
           <video
             ref="videoRef"
-            class="preview-video"
+            class="camera-video"
             playsinline
             muted
             autoplay
@@ -148,51 +183,18 @@ const {
           </p>
         </div>
 
-        <p
-          v-if="uploadState === 'uploading'"
-          class="upload-status"
-        >
-          Uploading…
-        </p>
-        <p
-          v-else-if="uploadMessage"
-          class="upload-status"
-          :class="{ ok: uploadOk === true }"
-        >
-          {{ uploadMessage }}
-        </p>
-
-        <div
-          v-if="audioPlaybackUrl"
-          class="playback"
-        >
-          <p class="playback-label">
-            Session audio (local preview)
-          </p>
-          <audio
-            class="playback-audio"
-            controls
-            :src="audioPlaybackUrl"
-          />
+        <div class="camera-bottom">
+          <button
+            type="button"
+            class="btn-stop"
+            :disabled="!isSessionActive"
+            @click="handleClose"
+          >
+            Stop session
+          </button>
         </div>
-
-        <div
-          v-if="thumbUrls.length"
-          class="thumbs"
-        >
-          <p class="thumbs-label">
-            Captured board frames ({{ thumbUrls.length }})
-          </p>
-          <div class="thumbs-grid">
-            <img
-              v-for="(url, i) in thumbUrls"
-              :key="url + i"
-              :src="url"
-              alt=""
-              class="thumb"
-            >
-          </div>
-        </div>
+      </div>
+    </Teleport>
       </section>
 
       <section
@@ -284,38 +286,19 @@ const {
 
 .dashboard-inner {
   width: 100%;
-  max-width: min(48rem, 100%);
-  margin: 0 auto;
-}
-
-.dashboard-label {
-  margin: 0 0 0.5rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.5625rem, 0.55rem + 0.15vw, 0.6875rem);
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
+  max-width: 100%;
+  padding: 0 clamp(1rem, 3vw, 2rem);
 }
 
 .dashboard-title {
-  margin: 0 0 1rem;
+  margin: 0 0 clamp(1rem, 3vw, 1.5rem);
   font-family: var(--font-display);
   font-size: clamp(1.65rem, 4vw + 0.5rem, 2.35rem);
   font-weight: 700;
   color: var(--ink);
   letter-spacing: -0.03em;
   line-height: 1.1;
-  text-wrap: balance;
-}
-
-.dashboard-copy {
-  margin: 0 0 clamp(1.5rem, 4vw, 2rem);
-  max-width: 42rem;
-  font-size: clamp(0.9375rem, 0.92rem + 0.25vw, 1.0625rem);
-  line-height: 1.65;
-  color: var(--ink-muted);
-  text-wrap: pretty;
+  text-align: left;
 }
 
 .capture {
@@ -717,42 +700,14 @@ const {
   color: var(--ink-muted);
 }
 
-.playback-audio {
+.playback-video {
   display: block;
   width: 100%;
   max-width: min(28rem, 100%);
-}
-
-.thumbs {
-  margin-top: clamp(1rem, 3vw, 1.35rem);
-  padding-top: clamp(1rem, 3vw, 1.35rem);
-  border-top: 1px solid var(--line);
-}
-
-.thumbs-label {
-  margin: 0 0 0.75rem;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.thumbs-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(4.25rem, 1fr));
-  gap: clamp(0.4rem, 2vw, 0.65rem);
-  width: 100%;
-}
-
-.thumb {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
-  border-radius: 3px;
+  max-height: min(50vh, 24rem);
+  border-radius: 4px;
   border: 1px solid var(--line);
-  background: var(--bg-soft);
+  background: var(--void);
 }
 
 .back-link {
@@ -816,10 +771,6 @@ const {
   .frame-guide-target {
     max-height: min(76%, 36vh);
   }
-
-  .thumbs-grid {
-    grid-template-columns: repeat(auto-fill, minmax(3.75rem, 1fr));
-  }
 }
 
 @media (min-width: 600px) {
@@ -833,10 +784,117 @@ const {
   }
 }
 
+/* ── Fullscreen camera overlay ── */
+
+.camera-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  background: var(--void, #0a0a0a);
+}
+
+.camera-close {
+  position: absolute;
+  top: clamp(0.75rem, 2vw, 1.25rem);
+  right: clamp(0.75rem, 2vw, 1.25rem);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  font-size: 1.75rem;
+  line-height: 1;
+  color: rgb(255 255 255 / 0.9);
+  background: rgb(0 0 0 / 0.5);
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 50%;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s ease;
+}
+
+.camera-close:hover {
+  background: rgb(0 0 0 / 0.7);
+}
+
+.camera-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.camera-error {
+  position: absolute;
+  top: clamp(0.75rem, 2vw, 1.25rem);
+  left: clamp(0.75rem, 2vw, 1.25rem);
+  z-index: 105;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
+  color: var(--danger, #f87171);
+  background: rgb(0 0 0 / 0.6);
+  border-radius: 4px;
+}
+
+.camera-stats {
+  position: absolute;
+  top: clamp(0.75rem, 2vw, 1.25rem);
+  left: clamp(0.75rem, 2vw, 1.25rem);
+  z-index: 105;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  padding: 0.4rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.6875rem, 0.65rem + 0.2vw, 0.8125rem);
+  color: rgb(255 255 255 / 0.8);
+  background: rgb(0 0 0 / 0.5);
+  border-radius: 4px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.camera-preview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.camera-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-bottom {
+  display: flex;
+  justify-content: center;
+  padding: clamp(0.75rem, 2vw, 1.25rem);
+  background: rgb(0 0 0 / 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.camera-bottom .btn-stop {
+  flex: 0 0 auto;
+  min-width: 10rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .btn-setup:hover:not(:disabled),
   .btn-stop:hover:not(:disabled) {
     transform: none;
+  }
+
+  .camera-close:hover {
+    transition: none;
   }
 }
 </style>
