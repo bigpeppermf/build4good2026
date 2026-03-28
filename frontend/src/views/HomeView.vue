@@ -11,10 +11,16 @@ import { RouterLink } from "vue-router";
       class="hero-watermark"
       aria-hidden="true"
     >
-      <span class="wm">Practice</span>
-      <span class="wm">Practice</span>
-      <span class="wm">Practice</span>
-      <span class="wm">Practice</span>
+      <div class="wm-row wm-scroll-left"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-left"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-left"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-left"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-left"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
+      <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
     </div>
 
     <div class="hero-frame">
@@ -62,13 +68,6 @@ import { RouterLink } from "vue-router";
       </RouterLink>
     </div>
 
-    <p
-      class="scroll-hint"
-      aria-hidden="true"
-    >
-      <span class="scroll-line" />
-      <span class="scroll-text">Scroll</span>
-    </p>
   </section>
 </template>
 
@@ -78,36 +77,61 @@ import { RouterLink } from "vue-router";
   overflow: hidden;
   width: 100%;
   max-width: 100%;
-  min-height: min(100dvh, 56rem);
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: clamp(3.5rem, 10vw, 6.5rem) 0 clamp(4.5rem, 12vw, 6rem);
+  padding: clamp(2rem, 6vw, 4rem) 0;
 }
 
 .hero-watermark {
   position: absolute;
-  inset: -8% -20%;
+  inset: -20% -10%;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   justify-content: center;
-  align-content: center;
-  gap: 0.12em 0.4em;
+  gap: 0;
   pointer-events: none;
   transform: rotate(-7deg);
   font-family: var(--font-display);
   font-size: clamp(2.75rem, 12vw + 1rem, 8.5rem);
   font-weight: 800;
-  line-height: 0.85;
+  line-height: 1;
   letter-spacing: -0.04em;
   color: var(--ink);
   opacity: 0.04;
   user-select: none;
+  overflow: hidden;
 }
 
-.wm {
+.wm-row {
+  display: flex;
   white-space: nowrap;
+  will-change: transform;
+}
+
+.wm-track {
+  flex-shrink: 0;
+}
+
+.wm-scroll-left .wm-track {
+  animation: scroll-left 30s linear infinite;
+}
+
+.wm-scroll-right .wm-track {
+  animation: scroll-right 30s linear infinite;
+}
+
+@keyframes scroll-left {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+@keyframes scroll-right {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(0); }
 }
 
 .hero-frame {
@@ -284,41 +308,9 @@ import { RouterLink } from "vue-router";
   border-radius: 2px;
 }
 
-.scroll-hint {
-  position: absolute;
-  bottom: max(1.25rem, env(safe-area-inset-bottom, 0px));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  font-weight: 500;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.scroll-line {
-  display: block;
-  width: 1px;
-  height: clamp(1.5rem, 4vw, 2rem);
-  background-color: var(--line-strong);
-  opacity: 0.65;
-}
-
-.scroll-text {
-  margin-top: 0.15rem;
-}
-
 @media (max-width: 640px) {
   .hero {
-    min-height: min(100dvh, 52rem);
-    padding-top: clamp(3rem, 8vw, 4rem);
+    padding-top: clamp(2rem, 6vw, 3rem);
   }
 
   .hero-meta {

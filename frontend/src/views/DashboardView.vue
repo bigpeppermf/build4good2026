@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import { useWhiteboardSession } from "../composables/useWhiteboardSession";
 import type { PastSessionSummary } from "../types/pastSession";
 
@@ -24,6 +24,7 @@ const {
   stopSession,
 } = useWhiteboardSession();
 
+const router = useRouter();
 const cameraOpen = ref(false);
 
 function handleSetup() {
@@ -265,6 +266,14 @@ function handleClose() {
         >
           No sessions loaded yet.
         </p>
+
+        <button
+          type="button"
+          class="btn-chat"
+          @click="router.push({ name: 'chat' })"
+        >
+          Open chat
+        </button>
       </section>
 
       <RouterLink
@@ -409,6 +418,41 @@ function handleClose() {
   border-radius: 3px;
   border: 1px dashed var(--line-strong);
   background: rgb(0 0 0 / 0.15);
+}
+
+.btn-chat {
+  margin-top: clamp(1rem, 3vw, 1.25rem);
+  min-height: 2.75rem;
+  width: 100%;
+  padding: 0.55rem 1.15rem;
+  font-family: var(--font-sans);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: rgb(255 255 255 / 0.04);
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.btn-chat:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.btn-chat:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-chat:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .sessions-empty {
@@ -784,7 +828,16 @@ function handleClose() {
   }
 }
 
-/* ── Fullscreen camera overlay ── */
+@media (prefers-reduced-motion: reduce) {
+  .btn-setup:hover:not(:disabled),
+  .btn-stop:hover:not(:disabled) {
+    transform: none;
+  }
+}
+</style>
+
+<style>
+/* Unscoped — these styles target teleported DOM outside the component */
 
 .camera-overlay {
   position: fixed;
@@ -885,14 +938,126 @@ function handleClose() {
 .camera-bottom .btn-stop {
   flex: 0 0 auto;
   min-width: 10rem;
+  font: inherit;
+  cursor: pointer;
+  min-height: 2.75rem;
+  padding: 0.55rem 1.15rem;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--line-strong);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.camera-bottom .btn-stop:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.camera-bottom .btn-stop:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.camera-overlay .frame-guide {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(0.4rem, 2.5vw, 1rem);
+  pointer-events: none;
+}
+
+.camera-overlay .frame-guide-target {
+  position: relative;
+  width: min(92%, calc(100% - 0.75rem));
+  aspect-ratio: 4 / 3;
+  max-height: min(80%, 42vh);
+  border: 2px solid rgb(255 255 255 / 0.9);
+  border-radius: clamp(3px, 0.8vw, 6px);
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.55);
+}
+
+.camera-overlay .frame-corner {
+  position: absolute;
+  width: min(14%, 2rem);
+  height: min(14%, 2rem);
+  border: 0 solid rgb(255 255 255 / 0.95);
+  pointer-events: none;
+}
+
+.camera-overlay .frame-corner--tl { top: 5px; left: 5px; border-top-width: 3px; border-left-width: 3px; border-radius: 2px 0 0 0; }
+.camera-overlay .frame-corner--tr { top: 5px; right: 5px; border-top-width: 3px; border-right-width: 3px; border-radius: 0 2px 0 0; }
+.camera-overlay .frame-corner--bl { bottom: 5px; left: 5px; border-bottom-width: 3px; border-left-width: 3px; border-radius: 0 0 0 2px; }
+.camera-overlay .frame-corner--br { bottom: 5px; right: 5px; border-bottom-width: 3px; border-right-width: 3px; border-radius: 0 0 2px 0; }
+
+.camera-overlay .frame-guide-caption {
+  position: absolute;
+  bottom: clamp(5%, 3vw, 11%);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(95%, 18rem);
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: clamp(0.5rem, 2.2vw, 0.6875rem);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  line-height: 1.35;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.94);
+  text-shadow: 0 0 8px rgb(0 0 0 / 0.9), 0 1px 2px rgb(0 0 0 / 0.8);
+}
+
+.camera-overlay .timer-chip {
+  position: absolute;
+  top: clamp(0.45rem, 2vw, 0.8rem);
+  right: clamp(0.45rem, 2vw, 0.8rem);
+  z-index: 2;
+  min-height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.38rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.75rem, 2.8vw, 0.9375rem);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  color: var(--void);
+  background: rgb(255 252 248 / 0.95);
+  border: 1px solid rgb(255 255 255 / 0.35);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+}
+
+.camera-overlay .recording-badge {
+  position: absolute;
+  top: clamp(0.5rem, 2vw, 0.75rem);
+  left: clamp(0.5rem, 2vw, 0.75rem);
+  z-index: 2;
+  margin: 0;
+  padding: 0.3rem 0.55rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.5625rem, 2vw, 0.625rem);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #f7f4ee;
+  background: rgb(180 60 60 / 0.92);
+  border-radius: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .btn-setup:hover:not(:disabled),
-  .btn-stop:hover:not(:disabled) {
-    transform: none;
-  }
-
   .camera-close:hover {
     transition: none;
   }
