@@ -325,3 +325,146 @@ class TestReset:
         assert len(agent.message_history) == 1
         assert isinstance(agent.message_history[0], SystemMessage)
 
+
+# ------------------------------------------------------------------ #
+# Tool activation                                                      #
+# ------------------------------------------------------------------ #
+
+class TestToolActivation:
+    """Verify that the agent's tool dispatch layer works correctly."""
+
+    def test_tool_map_contains_all_expected_tools(self):
+        graph = SystemDesignGraph()
+        agent = WhiteboardAgent(graph)
+        expected = {
+            "create_node",
+            "add_details_to_node",
+            "delete_node",
+            "add_edge",
+            "remove_edge",
+            "set_entry_point",
+            "insert_node_between",
+            "get_graph_state",
+        }
+        assert set(agent.tool_map.keys()) == expected
+
+    def test_tool_is_invoked_when_llm_requests_it(self):
+        """The tool function itself should be called with the args the LLM supplied."""
+        agent, graph = make_agent()
+
+        # StructuredTool is a frozen Pydantic model so we can't patch its methods
+        # directly.  Instead, replace the tool_map entry with a wrapping MagicMock
+        # so we can observe calls while still letting the real function run.
+        original_tool = agent.tool_map["create_node"]
+        mock_tool = MagicMock(wraps=original_tool)
+        agent.tool_map["create_node"] = mock_tool
+
+        agent.llm_with_tools.invoke.side_effect = [
+            tool_response("create_node", {"id": "svc", "label": "Service", "type": "service"}),
+            text_response("Added service."),
+        ]
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        mock_tool.invoke.assert_called_once_with({"id": "svc", "label": "Service", "type": "service"})
+
+    def test_unknown_tool_name_is_skipped(self):
+        """If the LLM requests a tool that doesn't exist, the agent should not crash."""
+        agent, graph = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            tool_response("nonexistent_tool", {"foo": "bar"}),
+            text_response("Done."),
+        ]
+
+        response = agent.process_frame(SAMPLE_DELTA, 1000)
+
+        assert isinstance(response, str)
+        assert len(graph) == 0  # graph unchanged
+
+    def test_tool_result_content_appears_in_history(self):
+        """ToolMessage content should reflect the return value of the tool."""
+        agent, _ = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            tool_response(
+                "create_node",
+                {"id": "db", "label": "Database", "type": "database"},
+                call_id="t1",
+            ),
+            text_response("Database noted."),
+        ]
+
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        tool_msgs = [m for m in agent.message_history if isinstance(m, ToolMessage)]
+        assert len(tool_msgs) == 1
+        assert "created" in tool_msgs[0].content
+        assert "db" in tool_msgs[0].content
+
+    def test_all_tools_in_multi_tool_response_are_invoked(self):
+        """Every tool call in a batched response must be executed."""
+        agent, graph = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            multi_tool_response(
+                ("create_node", {"id": "a", "label": "A", "type": "service"}),
+                ("create_node", {"id": "b", "label": "B", "type": "service"}),
+                ("create_node", {"id": "c", "label": "C", "type": "service"}),
+            ),
+            text_response("Three nodes added."),
+        ]
+
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        ids = [n["id"] for n in graph.get_state()["nodes"]]
+        assert "a" in ids and "b" in ids and "c" in ids
+
+    def test_tool_loop_iterates_across_multiple_turns(self):
+        """Agent should keep looping when the LLM requests tools across multiple turns."""
+        agent, graph = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            tool_response("create_node", {"id": "x", "label": "X", "type": "service"}),
+            tool_response("create_node", {"id": "y", "label": "Y", "type": "service"}),
+            text_response("Both nodes added."),
+        ]
+
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        ids = [n["id"] for n in graph.get_state()["nodes"]]
+        assert "x" in ids and "y" in ids
+        # LLM invoked once per tool turn plus once for the final verbal response
+        assert agent.llm_with_tools.invoke.call_count == 3
+
+    def test_tool_call_id_is_preserved_in_tool_message(self):
+        """ToolMessage must reference the exact tool_call_id returned by the LLM."""
+        agent, _ = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            tool_response("get_graph_state", {}, call_id="abc-123"),
+            text_response("Checked the graph."),
+        ]
+
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        tool_msgs = [m for m in agent.message_history if isinstance(m, ToolMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0].tool_call_id == "abc-123"
+
+    def test_multi_tool_response_produces_one_tool_message_per_call(self):
+        """Each tool call in a batched response should produce its own ToolMessage."""
+        agent, _ = make_agent()
+
+        agent.llm_with_tools.invoke.side_effect = [
+            multi_tool_response(
+                ("create_node", {"id": "n1", "label": "N1", "type": "service"}),
+                ("create_node", {"id": "n2", "label": "N2", "type": "service"}),
+            ),
+            text_response("Two nodes."),
+        ]
+
+        agent.process_frame(SAMPLE_DELTA, 1000)
+
+        tool_msgs = [m for m in agent.message_history if isinstance(m, ToolMessage)]
+        assert len(tool_msgs) == 2
+

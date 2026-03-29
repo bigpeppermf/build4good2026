@@ -13,7 +13,8 @@ This backend supports a real-time system design analysis tool. A user draws comp
 | Surface | Caller | Purpose |
 |---------|--------|---------|
 | `POST /new-session` | Frontend | Create an isolated graph + agent for a user |
-| `POST /agent/process-frame` | CV pipeline | Send a visual_delta description to the Gemini agent |
+| `POST /agent/process-capture` | Frontend | Upload a raw JPEG frame; backend runs the visual-delta pipeline and calls the agent |
+| `POST /agent/process-frame` | CV pipeline (internal) | Send a pre-computed visual_delta text directly to the Gemini agent |
 | `POST /end-session` | Frontend | Persist the completed graph to MongoDB |
 | `GET /docs` | Browser | View this API reference |
 
@@ -59,18 +60,20 @@ uv run main.py
 # End session  : POST http://localhost:8000/end-session
 ```
 
-### `/agent/process-frame` internal pipeline
+### `/agent/process-capture` internal pipeline
 
-The CV pipeline processes frames in this order before calling this endpoint:
+When the frontend POSTs a raw JPEG frame to `/agent/process-capture`, the backend runs these steps:
 
-1. Decode frame
-2. Reject frame if a person is visible
-3. Reject frame if it is too similar to the last accepted frame
+1. Decode the frame
+2. Reject if a person is visible
+3. Reject if the frame is too similar to the last accepted frame
 4. Run OCR on the accepted frame
 5. Extract component text, nearby annotation text, and simple connections
 6. Compare against the previous accepted OCR snapshot
 7. Generate a plain-English `visual_delta`
-8. POST that `visual_delta` to `/agent/process-frame`
+8. Pass that `visual_delta` to the Gemini agent (same logic as `/agent/process-frame`)
+
+Frames that are rejected return `{ "discarded": true }` immediately.
 
 ---
 
@@ -326,9 +329,46 @@ Creates a fresh `SystemDesignGraph` and `WhiteboardAgent` for a new user. Return
 
 ---
 
+### `POST /agent/process-capture`
+
+Called by the **frontend** every 15 seconds with a raw JPEG still from the camera. The backend runs the full visual-delta pipeline on the frame and, if the frame is accepted, calls the Gemini agent and returns a verbal response.
+
+**Request:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | `string` | Yes | ID returned by `POST /new-session`. |
+| `timestamp_ms` | `integer` (string-encoded) | Yes | Milliseconds since session start. |
+| `frame` | file (`image/jpeg`) | Yes | JPEG captured from the camera `<video>` element. |
+
+**Response (200) — frame accepted and processed**
+```json
+{
+  "verbal_response": "Got it — I've added the Load Balancer and connected it to the API service.",
+  "visual_delta": "A box labeled 'Load Balancer' was drawn with an arrow to 'API Service'."
+}
+```
+
+**Response (200) — frame discarded** (person detected or frame too similar to last accepted)
+```json
+{ "discarded": true }
+```
+
+**Response (404)** — unknown session
+```json
+{ "error": "Invalid or missing 'session_id'." }
+```
+
+**Response (500)**
+```json
+{ "error": "<exception message>" }
+```
+
+---
+
 ### `POST /agent/process-frame`
 
-Called by the CV pipeline after each whiteboard frame is analysed. Passes the `visual_delta` text to the Gemini agent, which calls graph mutation tools as needed and returns a one-sentence verbal response.
+Lower-level endpoint used when the `visual_delta` text has already been computed externally (e.g. by a separate CV pipeline). Passes the description directly to the Gemini agent without running any frame processing.
 
 **Request:** `application/json`
 

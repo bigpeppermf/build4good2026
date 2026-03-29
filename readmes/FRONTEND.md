@@ -6,7 +6,7 @@
 
 ## Current phase
 
-Dashboard: **`POST /new-session`** (via `apiUrl` + Vite `/api` proxy) stores **`session_id`**; **JPEG** stills every **15s** go to **`POST /agent/process-capture`**; **`POST /end-session`** runs on stop. **`verbal_response`** text is listed in the dashboard and optionally spoken (TTS). **Audio** uses WebSocket `/api/practice/stream`. See [STREAMING.md](STREAMING.md).
+Dashboard: camera aimed at a physical whiteboard. On **Setup**, the frontend calls `POST /new-session` to create a backend session, then opens a fullscreen camera overlay. A JPEG still is captured from the camera preview every **15 seconds** and posted to `/agent/process-capture` (`src/composables/useWhiteboardSession.ts`). The agent's verbal response is displayed below the capture section and can be read aloud via the browser's Speech Synthesis API. Audio is recorded locally for on-device replay only — it is never sent to the server. See [STREAMING.md](STREAMING.md) for the full HTTP API.
 
 ## Layout decisions
 
@@ -25,7 +25,7 @@ Dashboard: **`POST /new-session`** (via `apiUrl` + Vite `/api` proxy) stores **`
 - Clicking "Setup" opens the camera in a fullscreen overlay (`Teleport` to `<body>`, `position: fixed; inset: 0`)
 - X button (top-right) closes the overlay and stops the session
 - "Stop session" button at the bottom also closes the overlay
-- Stats, timer chip, recording badge, and frame guide all render inside the overlay
+- Stats (session ID prefix, audio chunk count, frames posted), timer chip, recording badge, frame guide, and TTS toggle all render inside the overlay
 - Dashboard remains untouched underneath; overlay sits above everything (z-index 100)
 
 ### Home page (`HomeView.vue`)

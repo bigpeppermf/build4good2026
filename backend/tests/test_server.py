@@ -273,6 +273,88 @@ class TestSessionIsolation:
 
 
 # ------------------------------------------------------------------ #
+# Session cleanup guarantees                                           #
+# ------------------------------------------------------------------ #
+
+class TestSessionCleanup:
+    """
+    Verify that in-memory session state is always removed from the registry,
+    even when external services (e.g. MongoDB) fail.
+    """
+
+    def test_empty_graph_end_session_does_not_remove_session(self):
+        """
+        If end-session is rejected because the graph is empty (400), the session
+        must remain in the registry so the user can add nodes and retry.
+        """
+        import server.app as srv
+
+        sid = create_session()
+        res = client.post("/end-session", json={"session_id": sid})
+
+        assert res.status_code == 400
+        assert sid in srv._sessions  # session still alive — user can continue
+        srv._sessions.pop(sid, None)  # cleanup
+
+    def test_session_removed_when_save_raises(self):
+        """
+        If MongoDB save throws an unexpected exception, the session must still
+        be removed from the in-memory registry to prevent a permanent leak.
+        """
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        sid = create_session()
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(side_effect=RuntimeError("MongoDB unreachable"))
+        with patch.object(srv._store, "save_session", mock_save):
+            res = client.post("/end-session", json={"session_id": sid})
+
+        assert res.status_code == 500
+        assert "failed to save" in res.json()["error"].lower()
+        assert sid not in srv._sessions  # cleaned up despite the error
+
+    def test_failed_save_session_cannot_be_reused(self):
+        """
+        After a failed save, the session ID should not be reusable (it was popped).
+        """
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        sid = create_session()
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(side_effect=RuntimeError("DB down"))
+        with patch.object(srv._store, "save_session", mock_save):
+            client.post("/end-session", json={"session_id": sid})
+
+        res = client.post(
+            "/agent/process-frame",
+            json={"session_id": sid, "visual_delta": "something"},
+        )
+        assert res.status_code == 404
+
+    def test_successful_save_removes_session(self):
+        """Sanity-check: normal end-session still removes the session."""
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        sid = create_session()
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid, "nodes_saved": 1,
+            "edges_saved": 0, "traversal_order": ["svc"],
+        })
+        with patch.object(srv._store, "save_session", mock_save):
+            res = client.post("/end-session", json={"session_id": sid})
+
+        assert res.status_code == 200
+        assert sid not in srv._sessions
+
+
+# ------------------------------------------------------------------ #
 # End-to-end: frame processed → graph mutated → session saved         #
 # ------------------------------------------------------------------ #
 

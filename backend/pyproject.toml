@@ -31,6 +31,8 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = ["integration: tests that call the real Gemini API (opt-in only)"]
 
 [tool.setuptools]
 packages = ["agent", "core", "server"]

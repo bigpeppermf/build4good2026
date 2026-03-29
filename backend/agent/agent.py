@@ -143,7 +143,7 @@ def _build_tools(graph: SystemDesignGraph) -> list[Any]:
         return {"status": "deleted", "id": id}
 
     @tool
-    def add_edge(from_id: str, to_id: str, label: str = "") -> dict:
+    def add_edge(from_id: str, to_id: str, label: str | None = "") -> dict:
         """Create a directed connection between two components when an arrow is drawn.
 
         Args:
@@ -152,7 +152,7 @@ def _build_tools(graph: SystemDesignGraph) -> list[Any]:
             label: Optional relationship label
                 (e.g. 'routes traffic to', 'writes to', 'publishes events').
         """
-        edge = graph.add_edge(from_id=from_id, to_id=to_id, label=label)
+        edge = graph.add_edge(from_id=from_id, to_id=to_id, label=label or "")
         return {"status": "added", "edge": {"from": edge.from_id, "to": edge.to_id, "label": edge.label}}
 
     @tool
@@ -247,7 +247,7 @@ class WhiteboardAgent:
     def __init__(self, graph: SystemDesignGraph) -> None:
         self.graph = graph
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash-lite",
             temperature=0,
             google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
         )

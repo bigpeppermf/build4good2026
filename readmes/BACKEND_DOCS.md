@@ -1,4 +1,4 @@
-**Media ingest (current frontend):** `POST /new-session` stores a `session_id`; the UI streams **audio** over **WebSocket** `/practice/stream` and posts **JPEG** captures to **`POST /agent/process-capture`** with that `session_id` (per-session `VisualDeltaPipeline`, lazy-loaded). Plain-text deltas can also go to `POST /agent/process-frame`. `POST /end-session` persists the graph. Spec: [STREAMING.md](STREAMING.md), API: `backend/docs/api-reference.md`.
+**Media ingest (current frontend):** JPEG still frames from the camera every **15 seconds**, posted via `multipart/form-data` to `POST /agent/process-capture`. The backend frame-filtering module applies to those JPEG payloads: accepted frames go through OCR → `visual_delta` text → graph agent. Audio is recorded **locally** in the browser only and is never sent to the server.
 
 ---
 
@@ -24,14 +24,12 @@ This document is the plain-language backend status snapshot for the team.
 
 ## Where The Backend Is Right Now
 
-The backend is now a Python service, not the old TypeScript Express server.
+The backend is a Python service using Starlette + Uvicorn.
 
 There are currently two backend tracks in the repo:
 
-- The active system-design session backend
-- The new visual-delta pipeline that converts relevant frame changes into text for the agent
-
-The active backend now includes a streaming contract for live practice media ingestion over WebSocket, plus AI-driven graph/session infrastructure behind the scenes.
+- The active system-design session backend (HTTP API + Gemini agent)
+- The visual-delta pipeline that converts relevant frame changes into text for the agent
 
 The system-design backend is responsible for managing a live architecture graph during an interview session and saving it to MongoDB when the session ends.
 
@@ -45,7 +43,7 @@ When a user begins, we start a timed session. Hints pause the timer and resume a
   Stores architecture prompts in a format the AI can read consistently. The frontend receives one selected question for the session, and the backend keeps the matching solution context available for evaluation.
 
 - Collection phase
-  The current frontend sends live media over WebSocket. The backend and agent stack use that session media to build an understanding of the user's architecture over time.
+  The frontend captures JPEG stills from the camera every 15 seconds and posts them to the backend. The backend and agent stack use those frames to build an understanding of the user's architecture over time.
 
 - Review or hint
   Hint returns a suggestion for the frontend to display. Review returns a grade, improvement guidance, and can decide whether to continue with follow-up or correction flow.
@@ -72,18 +70,17 @@ When a user begins, we start a timed session. Hints pause the timer and resume a
 
 ## Current Agent / Collection Direction
 
-The recent backend changes also introduced a more real-time collection direction:
+The backend collection pipeline:
 
-- Media stream: WebSocket at `/api/practice/stream`
-- Current frontend media format: audio WebM chunks from `MediaRecorder` (audio-only) plus JPEG binaries on a fixed interval
+- Frontend posts JPEG frames to `POST /agent/process-capture` every 15 seconds
 - Environment includes `GOOGLE_API_KEY` support for Gemini-based multimodal workflows
 - LangChain and Gemini packages are now part of backend dependencies
 
-This means the backend is evolving beyond a simple “upload frame, get result” design and toward a live session pipeline.
+This means the backend has a staged visual pipeline that turns raw JPEG frames into structured graph updates via the Gemini agent.
 
 ## What The Visual Pipeline Does
 
-The visual pipeline is now the important middle layer between image input and agent reasoning.
+The visual pipeline is the important middle layer between image input and agent reasoning.
 
 Processing order:
 
@@ -98,7 +95,7 @@ Processing order:
 9. Compare the current OCR snapshot to the last accepted OCR snapshot
 10. Generate a plain-English `visual_delta` string
 
-This means the backend now has a real staged path for visual understanding instead of sending raw frames straight into the graph agent.
+This means the backend has a real staged path for visual understanding instead of sending raw frames straight into the graph agent.
 
 ## What Is Implemented In The Visual Pipeline
 
@@ -147,4 +144,3 @@ The packaging config in `backend/pyproject.toml` was also updated so editable in
 - Improve connection detection beyond simple Hough-line proximity
 - Improve annotation attachment so notes are more reliably linked to the correct component
 - Add end-to-end tests using saved image sequences
-- Decide how the WebSocket media stream should hand frames into this pipeline in production

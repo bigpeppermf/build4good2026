@@ -15,7 +15,7 @@ How the system works end-to-end, with worked examples showing how frames become 
 │  Receives: JPEG frame                                               │
 │  Produces: visual_delta text description                            │
 │           │                                                         │
-│           ▼  POST /agent/process-frame { session_id, visual_delta } │
+│           ▼  POST /agent/process-capture { session_id, frame JPEG } │
 │     WhiteboardAgent (LangChain + Gemini 2.0 Flash)                  │
 │     Decides which graph tools to call                               │
 │           │                                                         │
@@ -46,8 +46,7 @@ and a `WhiteboardAgent` bound to it, stores both under a UUID, and returns the
 
 ### Phase 2 — Live session (in-memory only)
 
-As the user draws, the CV pipeline processes each frame and sends `POST /agent/process-frame`
-with a `visual_delta` text description of what changed. The CV pipeline runs these steps internally:
+As the user draws, the frontend posts each JPEG frame to `POST /agent/process-capture`. The backend runs the visual-delta pipeline internally before calling the agent:
 
 1. Decode the incoming frame
 2. Reject if a person is visible
