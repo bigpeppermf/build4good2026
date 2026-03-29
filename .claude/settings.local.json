@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebSearch",
+      "WebFetch(domain:www.aifreeapi.com)",
+      "Bash(python:*)",
+      "WebFetch(domain:blog.laozhang.ai)"
+    ]
+  }
+}

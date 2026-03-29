@@ -194,8 +194,15 @@ async def end_session(request: Request) -> JSONResponse:
     if len(graph) == 0:
         return JSONResponse({"error": "Graph is empty — nothing to save."}, status_code=400)
 
-    summary = await _store.save_session(graph, session_id)
+    # Pop before saving so the session is always cleaned up from memory,
+    # even if the MongoDB write fails.
     _sessions.pop(session_id)
+
+    try:
+        summary = await _store.save_session(graph, session_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"Failed to save session: {exc}"}, status_code=500)
+
     return JSONResponse({"status": "saved", **summary})
 
 
