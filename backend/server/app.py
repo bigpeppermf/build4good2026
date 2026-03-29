@@ -7,11 +7,13 @@ Endpoints:
   POST /agent/process-frame   — send a visual_delta (JSON) to the Gemini agent
   POST /agent/process-capture — multipart JPEG + session_id; runs visual_delta pipeline then agent
   POST /end-session           — save the completed graph to MongoDB
+  POST /chat                  — ask follow-up questions using saved analysis context
 
 Run:
     uv run main.py
 """
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -24,7 +26,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
-from agent import WhiteboardAgent
+from agent import AnalysisAgent, ChatAgent, ValidationAgent, WhiteboardAgent
 from core.graph import SystemDesignGraph
 from core.session_store import SessionStore
 
@@ -38,6 +40,7 @@ _store = SessionStore(uri=os.environ["MONGODB_URI"])
 
 # Per-user session registry: session_id → {"graph": ..., "agent": ...}
 _sessions: dict[str, dict] = {}
+_analysis_jobs: dict[str, dict] = {}
 
 
 # ------------------------------------------------------------------ #
@@ -177,39 +180,269 @@ async def process_frame(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+async def analysis_status(request: Request) -> JSONResponse:
+    """
+    GET /analysis/{session_id}
+    Poll status for a post-session analysis/save job started by POST /end-session.
+    """
+    session_id = request.path_params.get("session_id", "")
+    if not session_id:
+        return JSONResponse({"error": "Missing 'session_id' path parameter."}, status_code=400)
+
+    status_payload = _analysis_jobs.get(session_id)
+    if status_payload is None:
+        return JSONResponse({"error": "Unknown 'session_id' for analysis."}, status_code=404)
+
+    return JSONResponse(status_payload)
+
+
+async def _run_post_session_pipeline(
+    session_id: str,
+    graph: SystemDesignGraph,
+    audio_bytes: bytes,
+    audio_mime_type: str,
+) -> None:
+    """
+    Post-session pipeline:
+    validate graph against audio transcript, persist validated graph, then run
+    structured analysis.
+    """
+    current_stage = "validation"
+    validation_result = None
+    analysis_output = None
+    analysis_save_summary = None
+    try:
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "processing",
+            "stage": "validation",
+        }
+
+        validator = ValidationAgent(graph)
+        validation_result = await validator.validate_audio(audio_bytes, audio_mime_type)
+
+        current_stage = "saving_session"
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "processing",
+            "stage": "saving_session",
+            "validation_summary": validation_result.validation_summary,
+            "validation_corrections": validation_result.corrections_made,
+            "graph_confidence": validation_result.graph_confidence,
+        }
+
+        summary = await _store.save_session(
+            graph,
+            session_id,
+            audio_transcript=validation_result.transcript,
+            validation_corrections=validation_result.corrections_made,
+            validation_summary=validation_result.validation_summary,
+            graph_confidence=validation_result.graph_confidence,
+        )
+
+        current_stage = "analysis"
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "processing",
+            "stage": "analysis",
+            "validation_summary": validation_result.validation_summary,
+            "validation_corrections": validation_result.corrections_made,
+            "graph_confidence": validation_result.graph_confidence,
+        }
+
+        session_metadata = {
+            "session_id": session_id,
+            "duration_ms": 0,
+            "frames_processed": 0,
+            "agent_responses": 0,
+            "nodes_saved": summary.get("nodes_saved", 0),
+            "edges_saved": summary.get("edges_saved", 0),
+        }
+        analyzer = AnalysisAgent()
+        analysis_output = analyzer.analyze(
+            graph=graph,
+            transcript=validation_result.transcript,
+            session_metadata=session_metadata,
+        )
+
+        current_stage = "saving_analysis"
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "processing",
+            "stage": "saving_analysis",
+            "validation_summary": validation_result.validation_summary,
+            "validation_corrections": validation_result.corrections_made,
+            "graph_confidence": validation_result.graph_confidence,
+        }
+        analysis_save_summary = await _store.save_analysis(session_id, analysis_output)
+
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "complete",
+            "stage": "complete",
+            "session_summary": summary,
+            "analysis_summary": analysis_save_summary if analysis_save_summary else {},
+            "analysis": analysis_output["analysis"] if analysis_output else {},
+            "feedback": analysis_output["feedback"] if analysis_output else {},
+            "score": analysis_output["score"] if analysis_output else {},
+            "validation_summary": (
+                validation_result.validation_summary
+                if validation_result is not None
+                else "Graph matches transcript"
+            ),
+            "validation_corrections": (
+                validation_result.corrections_made
+                if validation_result is not None
+                else 0
+            ),
+            "graph_confidence": (
+                validation_result.graph_confidence
+                if validation_result is not None
+                else 1.0
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "failed",
+            "stage": current_stage,
+            "error": f"Post-session pipeline failed: {exc}",
+        }
+
+
 async def end_session(request: Request) -> JSONResponse:
     """
     POST /end-session
     Called by the frontend when the user finishes their design.
-    Saves the session graph to MongoDB, removes it from the registry,
-    and returns a summary.
+    Accepts multipart/form-data:
+      session_id - ID returned by POST /new-session
+      audio      - recorded session audio blob (webm/ogg)
+    Returns HTTP 202 and starts asynchronous post-session processing.
+    """
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        return JSONResponse(
+            {"error": "Content-Type must be multipart/form-data."},
+            status_code=400,
+        )
 
+    try:
+        form = await request.form()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "Could not parse form body."}, status_code=400)
+
+    raw_sid = form.get("session_id")
+    session_id = raw_sid if isinstance(raw_sid, str) else ""
+    if not session_id or session_id not in _sessions:
+        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    audio_upload = form.get("audio")
+    if not isinstance(audio_upload, UploadFile):
+        return JSONResponse({"error": "Missing or invalid 'audio' field."}, status_code=400)
+
+    audio_bytes: bytes = await audio_upload.read()
+    if not audio_bytes:
+        return JSONResponse({"error": "Empty audio upload."}, status_code=400)
+    audio_mime_type = audio_upload.content_type or "audio/webm"
+
+    graph = _sessions[session_id]["graph"]
+    if len(graph) == 0:
+        return JSONResponse({"error": "Graph is empty - nothing to save."}, status_code=400)
+
+    # Pop before enqueueing so IDs are not reusable while processing.
+    _sessions.pop(session_id)
+    _analysis_jobs[session_id] = {
+        "session_id": session_id,
+        "status": "processing",
+        "stage": "queued",
+    }
+
+    try:
+        asyncio.create_task(
+            _run_post_session_pipeline(
+                session_id,
+                graph,
+                audio_bytes,
+                audio_mime_type,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        _analysis_jobs[session_id] = {
+            "session_id": session_id,
+            "status": "failed",
+            "stage": "queued",
+            "error": f"Failed to start post-session processing: {exc}",
+        }
+        return JSONResponse({"error": f"Failed to start post-session processing: {exc}"}, status_code=500)
+
+    return JSONResponse(
+        {"session_id": session_id, "status": "processing"},
+        status_code=202,
+    )
+
+
+async def chat(request: Request) -> JSONResponse:
+    """
+    POST /chat
     JSON body:
-        session_id — ID returned by POST /new-session
+      session_id - completed session ID with saved analysis
+      message    - user follow-up question
     """
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
 
-    session_id = body.get("session_id", "")
-    if not session_id or session_id not in _sessions:
-        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+    raw_sid = body.get("session_id") if isinstance(body, dict) else None
+    session_id = raw_sid.strip() if isinstance(raw_sid, str) else ""
+    if not session_id:
+        return JSONResponse({"error": "Missing or invalid 'session_id'."}, status_code=400)
 
-    graph = _sessions[session_id]["graph"]
-    if len(graph) == 0:
-        return JSONResponse({"error": "Graph is empty — nothing to save."}, status_code=400)
+    raw_message = body.get("message") if isinstance(body, dict) else None
+    message = raw_message.strip() if isinstance(raw_message, str) else ""
+    if not message:
+        return JSONResponse({"error": "Missing or empty 'message'."}, status_code=400)
 
-    # Pop before saving so the session is always cleaned up from memory,
-    # even if the MongoDB write fails.
-    _sessions.pop(session_id)
+    analysis_doc = await _store.get_analysis(session_id)
+    if analysis_doc is None:
+        return JSONResponse({"error": "Unknown 'session_id' for chat."}, status_code=404)
+
+    seed_context_raw = analysis_doc.get("chat_seed_context")
+    seed_context = seed_context_raw.strip() if isinstance(seed_context_raw, str) else ""
+    if not seed_context:
+        return JSONResponse({"error": "Chat context is unavailable for this session."}, status_code=404)
 
     try:
-        summary = await _store.save_session(graph, session_id)
+        agent = ChatAgent(chat_seed_context=seed_context)
+        response_text = agent.respond(message)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": f"Failed to save session: {exc}"}, status_code=500)
+        return JSONResponse({"error": f"Chat failed: {exc}"}, status_code=500)
 
-    return JSONResponse({"status": "saved", **summary})
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "response": response_text,
+        }
+    )
+
+
+def _pipeline_error_message(exc: BaseException) -> str:
+    """Turn low-level import/CV failures into actionable text for the browser."""
+    raw = str(exc)
+    low = raw.lower()
+    if isinstance(exc, ImportError):
+        return (
+            "CV dependencies failed to import. In the backend folder run: "
+            "uv sync && uv run main.py"
+        )
+    if "numpy" in low and (
+        "not available" in low or "no module named" in low or "failed" in low
+    ):
+        return (
+            "NumPy/OpenCV could not load in this Python environment. "
+            "Run the API from the backend folder with: uv sync && uv run main.py"
+        )
+    return raw
 
 
 async def process_capture(request: Request) -> JSONResponse:
@@ -251,7 +484,7 @@ async def process_capture(request: Request) -> JSONResponse:
     try:
         pipeline_result = pipeline.process_frame(frame_bytes, timestamp_ms)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": _pipeline_error_message(exc)}, status_code=500)
 
     if pipeline_result is None:
         return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
@@ -264,13 +497,21 @@ async def process_capture(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
 
+    # Persist frame data to MongoDB in the background.
+    try:
+        await _store.save_frame(
+            session_id=session_id,
+            timestamp_ms=timestamp_ms,
+            visual_delta=pipeline_result["visual_delta"],
+            verbal_response=verbal_response,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # Non-critical — don't fail the response if the write fails.
+
     return JSONResponse(
         {
             "verbal_response": verbal_response,
             "visual_delta": pipeline_result["visual_delta"],
-            "labels": pipeline_result["labels"],
-            "annotations": pipeline_result["annotations"],
-            "connections": pipeline_result["connections"],
             "timestamp_ms": timestamp_ms,
         }
     )
@@ -284,6 +525,8 @@ app = Starlette(
     routes=[
         Route("/docs", serve_docs, methods=["GET"]),
         Route("/new-session", new_session, methods=["POST"]),
+        Route("/analysis/{session_id}", analysis_status, methods=["GET"]),
+        Route("/chat", chat, methods=["POST"]),
         Route("/agent/process-frame", process_frame, methods=["POST"]),
         Route("/agent/process-capture", process_capture, methods=["POST"]),
         Route("/end-session", end_session, methods=["POST"]),
@@ -294,6 +537,8 @@ app = Starlette(
 def serve() -> None:
     print("Docs            : GET  http://localhost:8000/docs")
     print("New session     : POST http://localhost:8000/new-session")
+    print("Analysis status : GET  http://localhost:8000/analysis/{session_id}")
+    print("Chat            : POST http://localhost:8000/chat")
     print("Process frame   : POST http://localhost:8000/agent/process-frame")
     print("Process capture : POST http://localhost:8000/agent/process-capture")
     print("End session     : POST http://localhost:8000/end-session")

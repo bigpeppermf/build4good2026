@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   useWhiteboardSession,
@@ -16,6 +16,7 @@ const {
   uploadOk,
   uploadState,
   frameCropNorm,
+  lastCompletedSessionId,
   verbalResponses,
   lastCaptureError,
   lastCaptureProcessStatus,
@@ -27,6 +28,7 @@ const {
 
 const router = useRouter();
 const cameraOpen = ref(false);
+const lastRoutedSessionId = ref<string | null>(null);
 
 const previewRef = ref<HTMLElement | null>(null);
 
@@ -183,9 +185,30 @@ function handleClose() {
 function goToPlaceholderChat() {
   void router.push({
     name: "chat",
+    params: { sessionId: "placeholder-1" },
     query: { session: "placeholder-1" },
   });
 }
+
+watch(
+  [uploadState, uploadOk, lastCompletedSessionId],
+  ([nextUploadState, nextUploadOk, nextCompletedSessionId]) => {
+    if (
+      nextUploadState === "done" &&
+      nextUploadOk === true &&
+      nextCompletedSessionId &&
+      nextCompletedSessionId !== lastRoutedSessionId.value
+    ) {
+      lastRoutedSessionId.value = nextCompletedSessionId;
+      cameraOpen.value = false;
+      void router.push({
+        name: "chat",
+        params: { sessionId: nextCompletedSessionId },
+        query: { session: nextCompletedSessionId },
+      });
+    }
+  },
+);
 </script>
 
 <template>

@@ -8,12 +8,13 @@ early (400/404 responses) before touching external services.
 """
 
 import os
+import time
 
 import pytest
 
-# Provide stub env vars before the server module is imported so that
-# ChatGoogleGenerativeAI and Motor do not raise on missing keys.
-os.environ.setdefault("GOOGLE_API_KEY", "test-key-stub")
+# Force a stub key before importing server.app so post-session validation
+# never makes real Gemini API calls during this test module.
+os.environ["GOOGLE_API_KEY"] = "test-key-stub"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 
 from starlette.testclient import TestClient  # noqa: E402
@@ -32,6 +33,40 @@ def create_session() -> str:
     res = client.post("/new-session")
     assert res.status_code == 200
     return res.json()["session_id"]
+
+
+def end_session_with_audio(session_id: str, audio_bytes: bytes = b"fake-audio") -> object:
+    """
+    Call POST /end-session using the Step 2 multipart contract.
+    """
+    return client.post(
+        "/end-session",
+        data={"session_id": session_id},
+        files={"audio": ("session.webm", audio_bytes, "audio/webm")},
+    )
+
+
+def wait_for_analysis_final(session_id: str, timeout_s: float = 1.0) -> dict:
+    """
+    Poll GET /analysis/{session_id} until status becomes complete/failed.
+    """
+    deadline = time.time() + timeout_s
+    latest_payload: dict | None = None
+    latest_code: int | None = None
+
+    while time.time() < deadline:
+        res = client.get(f"/analysis/{session_id}")
+        latest_code = res.status_code
+        if res.status_code == 200:
+            latest_payload = res.json()
+            if latest_payload.get("status") in {"complete", "failed"}:
+                return latest_payload
+        time.sleep(0.01)
+
+    pytest.fail(
+        "Timed out waiting for analysis completion. "
+        f"last_code={latest_code}, last_payload={latest_payload}",
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -169,26 +204,322 @@ class TestProcessCaptureEndpoint:
 
 class TestEndSessionEndpoint:
     def test_missing_session_id_returns_404(self):
-        res = client.post("/end-session", json={})
+        res = client.post(
+            "/end-session",
+            data={},
+            files={"audio": ("session.webm", b"audio", "audio/webm")},
+        )
         assert res.status_code == 404
 
     def test_invalid_session_id_returns_404(self):
-        res = client.post("/end-session", json={"session_id": "not-a-real-id"})
+        res = end_session_with_audio("not-a-real-id")
         assert res.status_code == 404
 
-    def test_non_json_body_returns_400(self):
+    def test_non_form_body_returns_400(self):
         res = client.post(
             "/end-session",
-            content=b"not json",
+            content=b"not form",
             headers={"Content-Type": "application/json"},
         )
         assert res.status_code == 400
 
+    def test_missing_audio_returns_400(self):
+        sid = create_session()
+        res = client.post(
+            "/end-session",
+            data={"session_id": sid},
+            files={"placeholder": ("placeholder.txt", b"x", "text/plain")},
+        )
+        assert res.status_code == 400
+        assert "audio" in res.json()["error"].lower()
+
+    def test_empty_audio_returns_400(self):
+        sid = create_session()
+        res = client.post(
+            "/end-session",
+            data={"session_id": sid},
+            files={"audio": ("session.webm", b"", "audio/webm")},
+        )
+        assert res.status_code == 400
+        assert "empty audio" in res.json()["error"].lower()
+
     def test_empty_graph_returns_400(self):
         sid = create_session()
-        res = client.post("/end-session", json={"session_id": sid})
+        res = end_session_with_audio(sid)
         assert res.status_code == 400
         assert "empty" in res.json()["error"].lower()
+
+
+# ------------------------------------------------------------------ #
+# GET /analysis/{session_id}                                          #
+# ------------------------------------------------------------------ #
+
+class TestAnalysisStatusEndpoint:
+    def test_unknown_session_id_returns_404(self):
+        res = client.get("/analysis/not-a-real-id")
+        assert res.status_code == 404
+
+    def test_polling_eventually_reaches_complete(self):
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        sid = create_session()
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid,
+            "nodes_saved": 1,
+            "edges_saved": 0,
+            "traversal_order": ["svc"],
+        })
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            assert res.status_code == 202
+            payload = wait_for_analysis_final(sid)
+
+        assert payload["status"] == "complete"
+        assert payload["stage"] == "complete"
+        assert payload["session_summary"]["session_id"] == sid
+
+    def test_pipeline_passes_validation_fields_into_save_session(self):
+        from unittest.mock import AsyncMock, patch
+
+        from agent.validation_agent import ValidationResult
+        import server.app as srv
+
+        sid = create_session()
+        graph = srv._sessions[sid]["graph"]
+        graph.create_node("svc", "Service", "service")
+
+        expected_validation = ValidationResult(
+            transcript="Browser traffic reaches API and Redis cache.",
+            corrections_made=2,
+            validation_summary="Added missing Redis cache from transcript.",
+            graph_confidence=0.5,
+        )
+
+        class FakeValidationAgent:
+            def __init__(self, _graph):
+                self.graph = _graph
+
+            async def validate_audio(self, _audio_bytes, _mime_type):
+                return expected_validation
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid,
+            "nodes_saved": 1,
+            "edges_saved": 0,
+            "traversal_order": ["svc"],
+        })
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv, "ValidationAgent", FakeValidationAgent),
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            assert res.status_code == 202
+            payload = wait_for_analysis_final(sid)
+
+        assert payload["status"] == "complete"
+        mock_save.assert_awaited_once()
+        assert mock_save.await_args.args[0] is graph
+        assert mock_save.await_args.args[1] == sid
+        assert mock_save.await_args.kwargs["audio_transcript"] == expected_validation.transcript
+        assert (
+            mock_save.await_args.kwargs["validation_corrections"]
+            == expected_validation.corrections_made
+        )
+        assert (
+            mock_save.await_args.kwargs["validation_summary"]
+            == expected_validation.validation_summary
+        )
+        assert (
+            mock_save.await_args.kwargs["graph_confidence"]
+            == expected_validation.graph_confidence
+        )
+
+    def test_complete_payload_includes_analysis_output(self):
+        from unittest.mock import AsyncMock, patch
+
+        from agent.validation_agent import ValidationResult
+        import server.app as srv
+
+        sid = create_session()
+        graph = srv._sessions[sid]["graph"]
+        graph.create_node("browser", "Browser", "client")
+        graph.create_node("api", "API", "service")
+        graph.add_edge("browser", "api", "requests")
+        graph.set_entry_point("browser")
+
+        expected_validation = ValidationResult(
+            transcript="Browser sends requests to API.",
+            corrections_made=0,
+            validation_summary="Graph matches transcript",
+            graph_confidence=1.0,
+        )
+        expected_analysis = {
+            "analysis": {
+                "architecture_pattern": "3-tier web architecture",
+                "component_count": 2,
+                "identified_components": ["Browser", "API"],
+                "connection_density": "moderate",
+                "entry_point": "Browser",
+                "disconnected_components": [],
+                "bottlenecks": [],
+                "missing_standard_components": ["Cache layer", "Message queue"],
+                "summary": "Compact architecture with a clear entry point.",
+            },
+            "feedback": {
+                "strengths": ["Entry point is clearly set."],
+                "improvements": ["Add a data layer and caching strategy."],
+                "critical_gaps": ["No database component detected."],
+                "narrative": "Good start; focus next on persistence and scale paths.",
+            },
+            "score": {
+                "total": 64,
+                "breakdown": {
+                    "completeness": 16,
+                    "scalability": 14,
+                    "reliability": 14,
+                    "clarity": 20,
+                },
+                "grade": "C",
+            },
+        }
+
+        class FakeValidationAgent:
+            def __init__(self, _graph):
+                self.graph = _graph
+
+            async def validate_audio(self, _audio_bytes, _mime_type):
+                return expected_validation
+
+        class FakeAnalysisAgent:
+            seen_transcripts: list[str] = []
+            seen_metadata: list[dict] = []
+
+            def analyze(self, *, graph, transcript, session_metadata):
+                self.__class__.seen_transcripts.append(transcript)
+                self.__class__.seen_metadata.append(session_metadata)
+                assert graph is not None
+                return expected_analysis
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid,
+            "nodes_saved": 2,
+            "edges_saved": 1,
+            "traversal_order": ["browser", "api"],
+        })
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv, "ValidationAgent", FakeValidationAgent),
+            patch.object(srv, "AnalysisAgent", FakeAnalysisAgent),
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            assert res.status_code == 202
+            payload = wait_for_analysis_final(sid)
+
+        assert payload["status"] == "complete"
+        assert payload["stage"] == "complete"
+        assert payload["analysis"] == expected_analysis["analysis"]
+        assert payload["feedback"] == expected_analysis["feedback"]
+        assert payload["score"] == expected_analysis["score"]
+        assert payload["analysis_summary"]["analysis_saved"] is True
+        mock_save_analysis.assert_awaited_once_with(sid, expected_analysis)
+        assert FakeAnalysisAgent.seen_transcripts[-1] == expected_validation.transcript
+        assert FakeAnalysisAgent.seen_metadata[-1]["session_id"] == sid
+        assert FakeAnalysisAgent.seen_metadata[-1]["nodes_saved"] == 2
+
+
+# ------------------------------------------------------------------ #
+# POST /chat                                                          #
+# ------------------------------------------------------------------ #
+
+class TestChatEndpoint:
+    def test_non_json_body_returns_400(self):
+        res = client.post(
+            "/chat",
+            content=b"not-json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert res.status_code == 400
+        assert "json" in res.json()["error"].lower()
+
+    def test_missing_session_id_returns_400(self):
+        res = client.post("/chat", json={"message": "How do I improve scalability?"})
+        assert res.status_code == 400
+        assert "session_id" in res.json()["error"].lower()
+
+    def test_missing_message_returns_400(self):
+        res = client.post("/chat", json={"session_id": "abc123"})
+        assert res.status_code == 400
+        assert "message" in res.json()["error"].lower()
+
+    def test_unknown_session_id_returns_404(self):
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        with patch.object(srv._store, "get_analysis", AsyncMock(return_value=None)):
+            res = client.post(
+                "/chat",
+                json={
+                    "session_id": "missing-session",
+                    "message": "Why did reliability score drop?",
+                },
+            )
+
+        assert res.status_code == 404
+        assert "session_id" in res.json()["error"].lower()
+
+    def test_returns_chat_agent_response(self):
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        class FakeChatAgent:
+            seen_context: list[str] = []
+            seen_messages: list[str] = []
+
+            def __init__(self, chat_seed_context: str):
+                self.__class__.seen_context.append(chat_seed_context)
+
+            def respond(self, message: str) -> str:
+                self.__class__.seen_messages.append(message)
+                return "Add a Redis cache and replicate your data tier."
+
+        with (
+            patch.object(
+                srv._store,
+                "get_analysis",
+                AsyncMock(
+                    return_value={
+                        "_id": "session-chat",
+                        "chat_seed_context": "Session session-chat analysis context.",
+                    }
+                ),
+            ),
+            patch.object(srv, "ChatAgent", FakeChatAgent),
+        ):
+            res = client.post(
+                "/chat",
+                json={
+                    "session_id": "session-chat",
+                    "message": "How do I improve scalability?",
+                },
+            )
+
+        assert res.status_code == 200
+        payload = res.json()
+        assert payload["session_id"] == "session-chat"
+        assert payload["response"] == "Add a Redis cache and replicate your data tier."
+        assert FakeChatAgent.seen_context[-1] == "Session session-chat analysis context."
+        assert FakeChatAgent.seen_messages[-1] == "How do I improve scalability?"
 
 
 # ------------------------------------------------------------------ #
@@ -245,10 +576,15 @@ class TestSessionIsolation:
             "edges_saved": 0,
             "traversal_order": ["svc"],
         })
-        with patch.object(srv._store, "save_session", mock_save):
-            res = client.post("/end-session", json={"session_id": sid})
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            wait_for_analysis_final(sid)
 
-        assert res.status_code == 200
+        assert res.status_code == 202
         assert sid not in srv._sessions
 
     def test_ended_session_id_cannot_be_reused(self):
@@ -261,8 +597,13 @@ class TestSessionIsolation:
         mock_save = AsyncMock(return_value={
             "session_id": sid, "nodes_saved": 1, "edges_saved": 0, "traversal_order": ["svc"],
         })
-        with patch.object(srv._store, "save_session", mock_save):
-            client.post("/end-session", json={"session_id": sid})
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            end_session_with_audio(sid)
+            wait_for_analysis_final(sid)
 
         # Trying to use the same session_id again should 404
         res = client.post(
@@ -290,16 +631,16 @@ class TestSessionCleanup:
         import server.app as srv
 
         sid = create_session()
-        res = client.post("/end-session", json={"session_id": sid})
+        res = end_session_with_audio(sid)
 
         assert res.status_code == 400
         assert sid in srv._sessions  # session still alive — user can continue
         srv._sessions.pop(sid, None)  # cleanup
 
-    def test_session_removed_when_save_raises(self):
+    def test_failed_background_save_reports_failed_status_and_session_is_removed(self):
         """
-        If MongoDB save throws an unexpected exception, the session must still
-        be removed from the in-memory registry to prevent a permanent leak.
+        If MongoDB save throws in the background worker, /end-session still returns
+        202 and /analysis eventually reports failed.
         """
         from unittest.mock import AsyncMock, patch
         import server.app as srv
@@ -308,12 +649,48 @@ class TestSessionCleanup:
         srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
 
         mock_save = AsyncMock(side_effect=RuntimeError("MongoDB unreachable"))
-        with patch.object(srv._store, "save_session", mock_save):
-            res = client.post("/end-session", json={"session_id": sid})
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            payload = wait_for_analysis_final(sid)
 
-        assert res.status_code == 500
-        assert "failed to save" in res.json()["error"].lower()
-        assert sid not in srv._sessions  # cleaned up despite the error
+        assert res.status_code == 202
+        assert payload["status"] == "failed"
+        assert "post-session pipeline failed" in payload["error"].lower()
+        assert sid not in srv._sessions
+
+    def test_failed_analysis_save_reports_failed_status(self):
+        """
+        If analysis persistence fails after session save, status should be failed
+        with stage=saving_analysis.
+        """
+        from unittest.mock import AsyncMock, patch
+        import server.app as srv
+
+        sid = create_session()
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid,
+            "nodes_saved": 1,
+            "edges_saved": 0,
+            "traversal_order": ["svc"],
+        })
+        mock_save_analysis = AsyncMock(side_effect=RuntimeError("Analysis collection unavailable"))
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            payload = wait_for_analysis_final(sid)
+
+        assert res.status_code == 202
+        assert payload["status"] == "failed"
+        assert payload["stage"] == "saving_analysis"
+        assert "post-session pipeline failed" in payload["error"].lower()
 
     def test_failed_save_session_cannot_be_reused(self):
         """
@@ -326,8 +703,13 @@ class TestSessionCleanup:
         srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
 
         mock_save = AsyncMock(side_effect=RuntimeError("DB down"))
-        with patch.object(srv._store, "save_session", mock_save):
-            client.post("/end-session", json={"session_id": sid})
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            end_session_with_audio(sid)
+            wait_for_analysis_final(sid)
 
         res = client.post(
             "/agent/process-frame",
@@ -347,10 +729,15 @@ class TestSessionCleanup:
             "session_id": sid, "nodes_saved": 1,
             "edges_saved": 0, "traversal_order": ["svc"],
         })
-        with patch.object(srv._store, "save_session", mock_save):
-            res = client.post("/end-session", json={"session_id": sid})
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid)
+            wait_for_analysis_final(sid)
 
-        assert res.status_code == 200
+        assert res.status_code == 202
         assert sid not in srv._sessions
 
 
@@ -439,15 +826,21 @@ class TestEndToEnd:
                 "edges_saved": 1,
                 "traversal_order": ["browser", "api"],
             })
-            with patch.object(srv._store, "save_session", mock_save):
-                res3 = client.post("/end-session", json={"session_id": sid})
+            mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+            with (
+                patch.object(srv._store, "save_session", mock_save),
+                patch.object(srv._store, "save_analysis", mock_save_analysis),
+            ):
+                res3 = end_session_with_audio(sid)
+                analysis_payload = wait_for_analysis_final(sid)
 
-            assert res3.status_code == 200
-            data = res3.json()
-            assert data["status"] == "saved"
-            assert data["nodes_saved"] == 2
-            assert data["edges_saved"] == 1
-            assert data["traversal_order"] == ["browser", "api"]
+            assert res3.status_code == 202
+            assert res3.json()["status"] == "processing"
+            assert analysis_payload["status"] == "complete"
+            assert analysis_payload["session_summary"]["nodes_saved"] == 2
+            assert analysis_payload["session_summary"]["edges_saved"] == 1
+            assert analysis_payload["session_summary"]["traversal_order"] == ["browser", "api"]
+            assert analysis_payload["analysis_summary"]["analysis_saved"] is True
 
             # Session should be cleaned up after saving
             assert sid not in srv._sessions
