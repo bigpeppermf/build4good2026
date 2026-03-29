@@ -11,7 +11,13 @@
       "Bash(xargs cat:*)",
       "Bash(git fetch:*)",
       "Bash(find /c/Users/alimo/Documents/Code/build4good2026/frontend -name .env* -o -name *.env)",
-      "Bash(uv sync:*)"
+      "Bash(uv sync:*)",
+      "Bash(cd /Users/alemanb/Documents/build4good2026/backend && .venv/bin/pytest tests/ -q 2>&1 | tail -20)",
+      "Bash(.venv/bin/pytest tests/test_validation_agent.py tests/test_analysis_agent.py tests/test_agent.py tests/test_graph.py -q 2>&1 | tail -10)",
+      "Bash(.venv/bin/pytest tests/test_validation_agent.py tests/test_analysis_agent.py -v 2>&1 | tail -20)",
+      "Bash(.venv/bin/pytest tests/test_server.py::TestAnalysisStatusEndpoint::test_complete_payload_includes_analysis_output -v 2>&1 | tail -30)",
+      "Bash(.venv/bin/pytest tests/test_validation_agent.py tests/test_analysis_agent.py tests/test_server.py::TestAnalysisStatusEndpoint -q 2>&1 | tail -10)",
+      "Bash(.venv/bin/pytest tests/ -q --ignore=tests/test_auth_enforcement.py --ignore=tests/test_session_store.py 2>&1 | tail -10)"
     ]
   }
 }

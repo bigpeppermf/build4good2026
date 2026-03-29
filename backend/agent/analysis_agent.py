@@ -7,6 +7,7 @@ validated graph and transcript.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -168,7 +169,7 @@ class AnalysisAgent:
         else:
             self.llm = None
 
-    def analyze(
+    async def analyze(
         self,
         graph: SystemDesignGraph,
         transcript: str,
@@ -189,11 +190,14 @@ class AnalysisAgent:
             "Return JSON only."
         )
         try:
-            response = self.llm.invoke(
-                [
-                    SystemMessage(content=ANALYSIS_SYSTEM_PROMPT),
-                    HumanMessage(content=prompt),
-                ]
+            response = await asyncio.wait_for(
+                self.llm.ainvoke(
+                    [
+                        SystemMessage(content=ANALYSIS_SYSTEM_PROMPT),
+                        HumanMessage(content=prompt),
+                    ]
+                ),
+                timeout=60.0,
             )
             raw = _message_content_to_text(getattr(response, "content", ""))
             parsed = _extract_json_candidate(raw)

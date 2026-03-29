@@ -339,7 +339,7 @@ async def _run_post_session_pipeline(
             "edges_saved": summary.get("edges_saved", 0),
         }
         analyzer = AnalysisAgent()
-        analysis_output = analyzer.analyze(
+        analysis_output = await analyzer.analyze(
             graph=graph,
             transcript=validation_result.transcript,
             session_metadata=session_metadata,

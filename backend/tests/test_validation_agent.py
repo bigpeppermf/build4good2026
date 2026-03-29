@@ -7,7 +7,7 @@ The LLM and transcription layers are mocked so tests run offline.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -30,11 +30,11 @@ def text_response(text: str) -> AIMessage:
 def make_agent(
     graph: SystemDesignGraph | None = None,
     transcript_text: str = "Candidate mentioned Redis cache and API.",
-) -> tuple[ValidationAgent, SystemDesignGraph, MagicMock]:
+) -> tuple[ValidationAgent, SystemDesignGraph, AsyncMock]:
     graph = graph or SystemDesignGraph()
 
     llm = MagicMock()
-    llm_with_tools = MagicMock()
+    llm_with_tools = AsyncMock()
     llm.bind_tools.return_value = llm_with_tools
 
     async def fake_transcribe(_audio_bytes: bytes, _mime_type: str) -> str:
@@ -56,7 +56,7 @@ class TestValidationAgent:
         graph.add_edge("client", "api", "requests")
 
         agent, _, llm_with_tools = make_agent(graph=graph)
-        llm_with_tools.invoke.side_effect = [
+        llm_with_tools.ainvoke.side_effect = [
             tool_response(
                 "create_node",
                 {"id": "redis", "label": "Redis Cache", "type": "cache"},
@@ -66,7 +66,7 @@ class TestValidationAgent:
             text_response("Added Redis cache mentioned in transcript."),
         ]
 
-        result = agent.validate_transcript("I added Redis cache behind API.")
+        result = asyncio.run(agent.validate_transcript("I added Redis cache behind API."))
 
         node_ids = [node["id"] for node in graph.get_state()["nodes"]]
         assert "redis" in node_ids
@@ -77,17 +77,17 @@ class TestValidationAgent:
     def test_validate_transcript_empty_input_skips_llm(self):
         agent, _, llm_with_tools = make_agent(transcript_text="")
 
-        result = agent.validate_transcript("   ")
+        result = asyncio.run(agent.validate_transcript("   "))
 
         assert result.transcript == ""
         assert result.corrections_made == 0
         assert result.validation_summary == "Graph matches transcript"
         assert result.graph_confidence == 1.0
-        assert llm_with_tools.invoke.call_count == 0
+        assert llm_with_tools.ainvoke.call_count == 0
 
     def test_validate_audio_uses_transcriber_output(self):
         agent, _, llm_with_tools = make_agent(transcript_text="Transcript text")
-        llm_with_tools.invoke.side_effect = [
+        llm_with_tools.ainvoke.side_effect = [
             text_response("Graph matches transcript"),
         ]
 
@@ -95,7 +95,7 @@ class TestValidationAgent:
 
         assert result.transcript == "Transcript text"
         assert result.validation_summary == "Graph matches transcript"
-        assert llm_with_tools.invoke.call_count == 1
+        assert llm_with_tools.ainvoke.call_count == 1
 
     def test_non_empty_transcript_without_llm_raises(
         self,
@@ -105,7 +105,7 @@ class TestValidationAgent:
         agent = ValidationAgent(graph=SystemDesignGraph())
 
         with pytest.raises(RuntimeError, match="Validation LLM is not configured"):
-            agent.validate_transcript("non-empty transcript")
+            asyncio.run(agent.validate_transcript("non-empty transcript"))
 
 
 class TestTranscribeAudio:

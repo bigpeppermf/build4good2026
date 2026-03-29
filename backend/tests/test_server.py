@@ -542,7 +542,7 @@ class TestAnalysisStatusEndpoint:
             seen_transcripts: list[str] = []
             seen_metadata: list[dict] = []
 
-            def analyze(self, *, graph, transcript, session_metadata):
+            async def analyze(self, *, graph, transcript, session_metadata):
                 self.__class__.seen_transcripts.append(transcript)
                 self.__class__.seen_metadata.append(session_metadata)
                 assert graph is not None

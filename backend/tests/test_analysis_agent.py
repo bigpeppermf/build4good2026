@@ -4,7 +4,8 @@ Unit tests for agent/analysis_agent.py.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.messages import AIMessage
 
@@ -27,11 +28,11 @@ def test_analyze_without_llm_returns_valid_schema():
     graph = _build_graph()
     agent = AnalysisAgent(llm=None)
 
-    output = agent.analyze(
+    output = asyncio.run(agent.analyze(
         graph=graph,
         transcript="Browser sends requests to API, API writes to PostgreSQL.",
         session_metadata={"duration_ms": 120000, "frames_processed": 8, "agent_responses": 8},
-    )
+    ))
 
     assert set(output.keys()) == {"analysis", "feedback", "score"}
 
@@ -58,7 +59,7 @@ def test_analyze_without_llm_returns_valid_schema():
 def test_analyze_uses_llm_json_when_parseable():
     graph = _build_graph()
     mock_llm = MagicMock()
-    mock_llm.invoke.return_value = AIMessage(
+    mock_llm.ainvoke = AsyncMock(return_value=AIMessage(
         content=(
             '{"analysis":{"architecture_pattern":"3-tier web architecture",'
             '"component_count":3,"identified_components":["Browser","API Service","PostgreSQL"],'
@@ -72,33 +73,33 @@ def test_analyze_uses_llm_json_when_parseable():
             '"score":{"total":82,"breakdown":{"completeness":21,"scalability":20,'
             '"reliability":20,"clarity":21},"grade":"B"}}'
         )
-    )
+    ))
     agent = AnalysisAgent(llm=mock_llm)
 
-    output = agent.analyze(
+    output = asyncio.run(agent.analyze(
         graph=graph,
         transcript="Candidate discussed adding Redis later.",
         session_metadata={"duration_ms": 60000},
-    )
+    ))
 
     assert output["analysis"]["architecture_pattern"] == "3-tier web architecture"
     assert output["analysis"]["component_count"] == 3
     assert output["score"]["total"] == 82
     assert output["score"]["grade"] == "B"
-    assert mock_llm.invoke.call_count == 1
+    assert mock_llm.ainvoke.call_count == 1
 
 
 def test_analyze_invalid_llm_payload_falls_back_to_heuristics():
     graph = _build_graph()
     mock_llm = MagicMock()
-    mock_llm.invoke.return_value = AIMessage(content="not json at all")
+    mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="not json at all"))
     agent = AnalysisAgent(llm=mock_llm)
 
-    output = agent.analyze(
+    output = asyncio.run(agent.analyze(
         graph=graph,
         transcript="We have browser -> api -> database.",
         session_metadata=None,
-    )
+    ))
 
     assert set(output.keys()) == {"analysis", "feedback", "score"}
     assert output["analysis"]["component_count"] == 3

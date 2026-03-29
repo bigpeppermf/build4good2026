@@ -7,6 +7,7 @@ uses graph tools to apply high-confidence corrections.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -123,9 +124,9 @@ class ValidationAgent:
 
     async def validate_audio(self, audio_bytes: bytes, mime_type: str = "audio/webm") -> ValidationResult:
         transcript = await self._transcribe_fn(audio_bytes, mime_type)
-        return self.validate_transcript(transcript)
+        return await self.validate_transcript(transcript)
 
-    def validate_transcript(self, transcript: str) -> ValidationResult:
+    async def validate_transcript(self, transcript: str) -> ValidationResult:
         normalized_transcript = (transcript or "").strip()
         if not normalized_transcript:
             return ValidationResult(
@@ -153,7 +154,10 @@ class ValidationAgent:
         validation_summary = "Graph matches transcript"
 
         while True:
-            response = self.llm_with_tools.invoke(messages)
+            response = await asyncio.wait_for(
+                self.llm_with_tools.ainvoke(messages),
+                timeout=60.0,
+            )
             messages.append(response)
 
             if not response.tool_calls:
