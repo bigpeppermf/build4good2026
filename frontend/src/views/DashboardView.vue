@@ -20,6 +20,7 @@ const {
   uploadOk,
   uploadState,
   frameCropNorm,
+  lastCompletedSessionId,
   verbalResponses,
   lastCaptureError,
   lastCaptureProcessStatus,
@@ -37,7 +38,6 @@ const {
 
 const router = useRouter();
 const cameraOpen = ref(false);
-
 const recentSessionsList = ref(getRecentSessions());
 
 onMounted(() => {
@@ -228,6 +228,7 @@ function handleStartSession() {
 
 async function handleClose() {
   const sid = sessionId.value;
+  cameraOpen.value = false;
   await stopSession();
   if (sid) {
     persistWhiteboardSnapshot({
@@ -246,10 +247,14 @@ async function handleClose() {
     });
   }
   recentSessionsList.value = getRecentSessions();
-  cameraOpen.value = false;
+  const targetSessionId = lastCompletedSessionId.value ?? sid;
+  if (!targetSessionId) {
+    return;
+  }
   void router.push({
     name: "chat",
-    query: sid ? { session: sid } : {},
+    params: { sessionId: targetSessionId },
+    query: { session: targetSessionId },
   });
 }
 </script>
@@ -543,7 +548,11 @@ async function handleClose() {
           >
             <RouterLink
               class="recent-sessions-link"
-              :to="{ name: 'chat', query: { session: row.sessionId } }"
+              :to="{
+                name: 'chat',
+                params: { sessionId: row.sessionId },
+                query: { session: row.sessionId },
+              }"
             >
               <span class="recent-sessions-id">{{ shortSessionId(row.sessionId) }}</span>
               <span class="recent-sessions-time">{{ formatSavedAt(row.savedAt) }}</span>

@@ -11,7 +11,7 @@ const router = createRouter({
     { path: "/", name: "home", component: HomeView },
     { path: "/login", name: "login", component: LoginView },
     { path: "/dashboard", name: "dashboard", component: DashboardView },
-    { path: "/chat", name: "chat", component: ChatView },
+    { path: "/chat/:sessionId?", name: "chat", component: ChatView },
     { path: "/settings", name: "settings", component: SettingsView },
   ],
 });

@@ -10,6 +10,13 @@ const IMAGE_INTERVAL_MS = 15_000;
 
 const JPEG_QUALITY = 0.82;
 const EXPORT_MAX_WIDTH = 1280;
+const DEFAULT_AUDIO_MIME_TYPE = "audio/webm";
+const AUDIO_MIME_CANDIDATES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/ogg",
+] as const;
 
 /** Normalized crop rect over the video (0–1), from the adjustable frame UI. */
 export interface FrameCropNorm {
@@ -31,6 +38,24 @@ export interface VerbalResponseItem {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
+}
+
+function preferredAudioMimeType(): string | null {
+  if (typeof MediaRecorder === "undefined") {
+    return null;
+  }
+
+  if (typeof MediaRecorder.isTypeSupported !== "function") {
+    return AUDIO_MIME_CANDIDATES[0];
+  }
+
+  for (const candidate of AUDIO_MIME_CANDIDATES) {
+    if (MediaRecorder.isTypeSupported(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -116,6 +141,9 @@ export function useWhiteboardSession() {
   const videoRef = ref<HTMLVideoElement | null>(null);
 
   const activeStream = shallowRef<MediaStream | null>(null);
+  const mediaRecorder = ref<MediaRecorder | null>(null);
+  const audioChunks = ref<Blob[]>([]);
+  const audioBlob = ref<Blob | null>(null);
   const isSettingUp = ref(false);
   const isBeginningSession = ref(false);
   const isSessionActive = ref(false);
@@ -130,6 +158,7 @@ export function useWhiteboardSession() {
 
   /** Backend graph session (POST /new-session) — set when user taps Start session. */
   const sessionId = ref<string | null>(null);
+  const lastCompletedSessionId = ref<string | null>(null);
   const verbalResponses = ref<VerbalResponseItem[]>([]);
   const lastCaptureError = ref<string | null>(null);
 
@@ -190,11 +219,97 @@ export function useWhiteboardSession() {
 
   function teardownStream() {
     stopTimersAndIntervals();
+    if (mediaRecorder.value && mediaRecorder.value.state !== "inactive") {
+      try {
+        mediaRecorder.value.stop();
+      } catch {
+        // no-op: if the recorder is already stopping, this can throw.
+      }
+    }
+    mediaRecorder.value = null;
     activeStream.value?.getTracks().forEach((t) => t.stop());
     activeStream.value = null;
     if (videoRef.value) {
       videoRef.value.srcObject = null;
     }
+  }
+
+  function currentAudioMimeType(recorder: MediaRecorder | null): string {
+    const mime = recorder?.mimeType?.trim();
+    if (mime) {
+      return mime;
+    }
+    return preferredAudioMimeType() ?? DEFAULT_AUDIO_MIME_TYPE;
+  }
+
+  function buildAudioBlob(recorder: MediaRecorder | null): Blob {
+    return new Blob(audioChunks.value, { type: currentAudioMimeType(recorder) });
+  }
+
+  async function startAudioRecorder(stream: MediaStream) {
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("MediaRecorder is not supported in this browser.");
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      throw new Error(
+        "Microphone access is required. Please allow microphone permissions and try again.",
+      );
+    }
+
+    const recordingStream =
+      typeof MediaStream === "undefined"
+        ? stream
+        : new MediaStream(audioTracks);
+    const mimeType = preferredAudioMimeType();
+
+    const recorder = mimeType
+      ? new MediaRecorder(recordingStream, { mimeType })
+      : new MediaRecorder(recordingStream);
+
+    audioChunks.value = [];
+    audioBlob.value = null;
+
+    recorder.ondataavailable = (event: BlobEvent) => {
+      if (event.data.size > 0) {
+        audioChunks.value = [...audioChunks.value, event.data];
+      }
+    };
+
+    recorder.start();
+    mediaRecorder.value = recorder;
+  }
+
+  async function finalizeAudio(): Promise<Blob> {
+    const recorder = mediaRecorder.value;
+
+    if (!recorder) {
+      if (!audioBlob.value) {
+        audioBlob.value = new Blob([], { type: DEFAULT_AUDIO_MIME_TYPE });
+      }
+      return audioBlob.value;
+    }
+
+    if (recorder.state === "inactive") {
+      if (!audioBlob.value) {
+        audioBlob.value = buildAudioBlob(recorder);
+      }
+      return audioBlob.value;
+    }
+
+    return new Promise((resolve) => {
+      const previousOnStop = recorder.onstop;
+      recorder.onstop = (event: Event) => {
+        if (typeof previousOnStop === "function") {
+          previousOnStop.call(recorder, event);
+        }
+        const blob = buildAudioBlob(recorder);
+        audioBlob.value = blob;
+        resolve(blob);
+      };
+      recorder.stop();
+    });
   }
 
   function startImageInterval() {
@@ -302,22 +417,36 @@ export function useWhiteboardSession() {
     }
 
     uploadState.value = "uploading";
+    lastCompletedSessionId.value = null;
     try {
+      const finalizedAudio = await finalizeAudio();
+      const form = new FormData();
+      form.append("session_id", sid);
+      form.append(
+        "audio",
+        finalizedAudio,
+        finalizedAudio.type.includes("ogg") ? "session-audio.ogg" : "session-audio.webm",
+      );
+
       const res = await fetch(apiUrl("/end-session"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sid }),
+        body: form,
       });
       const data = (await res.json().catch(() => ({}))) as Record<
         string,
         unknown
       >;
       if (res.ok) {
+        const completedSid =
+          typeof data.session_id === "string" && data.session_id.trim()
+            ? data.session_id
+            : sid;
+        lastCompletedSessionId.value = completedSid;
         uploadOk.value = true;
         uploadMessage.value =
           typeof data.status === "string"
-            ? `Session ended and saved (${data.status}).`
-            : "Session ended and saved.";
+            ? `Session ended (${data.status}).`
+            : "Session ended.";
       } else {
         uploadOk.value = false;
         uploadMessage.value =
@@ -351,6 +480,10 @@ export function useWhiteboardSession() {
     discardedFramesCount.value = 0;
     processedFramesCount.value = 0;
     sessionId.value = null;
+    lastCompletedSessionId.value = null;
+    mediaRecorder.value = null;
+    audioChunks.value = [];
+    audioBlob.value = null;
     frameCropNorm.value = defaultFrameCrop();
     stopTimersAndIntervals();
     sessionElapsedMs.value = 0;
@@ -377,10 +510,16 @@ export function useWhiteboardSession() {
             width: { ideal: 1280 },
             height: { ideal: 720 },
           },
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true },
+          },
         });
       } catch {
         stream = await navigator.mediaDevices.getUserMedia({
           video: true,
+          audio: true,
         });
       }
       activeStream.value = stream;
@@ -421,6 +560,10 @@ export function useWhiteboardSession() {
     imageFramesSentCount.value = 0;
     discardedFramesCount.value = 0;
     processedFramesCount.value = 0;
+    lastCompletedSessionId.value = null;
+    audioChunks.value = [];
+    audioBlob.value = null;
+    mediaRecorder.value = null;
     sessionElapsedMs.value = 0;
     stopTimersAndIntervals();
 
@@ -438,6 +581,7 @@ export function useWhiteboardSession() {
         throw new Error("Invalid response from new-session.");
       }
       sessionId.value = nsJson.session_id;
+      await startAudioRecorder(activeStream.value);
       isSessionActive.value = true;
       startSessionTimer();
       startImageInterval();
@@ -469,6 +613,9 @@ export function useWhiteboardSession() {
   return {
     videoRef,
     activeStream,
+    mediaRecorder,
+    audioChunks,
+    audioBlob,
     isSettingUp,
     isBeginningSession,
     isSessionActive,
@@ -478,6 +625,7 @@ export function useWhiteboardSession() {
     uploadState,
     frameCropNorm,
     sessionId,
+    lastCompletedSessionId,
     verbalResponses,
     lastCaptureError,
     lastCaptureProcessStatus,
