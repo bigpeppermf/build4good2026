@@ -127,8 +127,8 @@ When a user begins, we start a timed session. Hints pause the timer and resume a
 - `backend/main.py`
   Starts the backend server.
 
-- `backend/graph_mcp/server.py`
-  Hosts the MCP server and exposes graph-editing tools for the AI.
+- `backend/server/app.py`
+  Starlette HTTP server — session management and all HTTP endpoints.
 
 - `backend/core/graph.py`
   Stores the in-memory graph of the user's architecture.

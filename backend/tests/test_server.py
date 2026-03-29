@@ -18,7 +18,7 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 
 from starlette.testclient import TestClient  # noqa: E402
 
-from graph_mcp.server import app  # noqa: E402
+from server.app import app  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -164,7 +164,7 @@ class TestSessionIsolation:
     def test_two_sessions_have_independent_graphs(self):
         from unittest.mock import MagicMock
         from langchain_core.messages import AIMessage
-        from graph_mcp import server as srv
+        import server.app as srv
 
         sid1 = create_session()
         sid2 = create_session()
@@ -198,7 +198,7 @@ class TestSessionIsolation:
 
     def test_ended_session_is_removed_from_registry(self):
         from unittest.mock import AsyncMock, patch
-        from graph_mcp import server as srv
+        import server.app as srv
 
         sid = create_session()
         # Manually add a node so the graph isn't empty
@@ -218,7 +218,7 @@ class TestSessionIsolation:
 
     def test_ended_session_id_cannot_be_reused(self):
         from unittest.mock import AsyncMock, patch
-        from graph_mcp import server as srv
+        import server.app as srv
 
         sid = create_session()
         srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
@@ -254,7 +254,7 @@ class TestEndToEnd:
     def test_full_session_flow(self):
         from unittest.mock import AsyncMock, MagicMock, patch
         from langchain_core.messages import AIMessage
-        from graph_mcp import server as srv
+        import server.app as srv
 
         # --- Start session ---
         sid = create_session()

@@ -10,16 +10,16 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "cyclopts>=4.10.1",
-    "fastmcp>=3.1.1",
     "langchain-core>=0.3",
     "langchain-google-genai>=2.0",
-    "mcp>=1.26.0",
     "motor>=3.7.1",
     "numpy>=2.2.4",
     "opencv-python>=4.11.0.86",
     "python-dotenv>=1.2.2",
-    "python-multipart>=0.0.9",
+    "starlette>=0.40",
+    "torch>=2.0,<2.3",
     "ultralytics>=8.3.99",
+    "uvicorn>=0.30",
 ]
 
 [tool.uv]
@@ -32,5 +32,5 @@ dev-dependencies = [
 testpaths = ["tests"]
 
 [tool.setuptools]
-packages = ["core", "graph_mcp"]
+packages = ["agent", "core", "server"]
 

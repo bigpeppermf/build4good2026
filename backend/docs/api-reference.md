@@ -32,12 +32,13 @@ This backend supports a real-time system design analysis tool. A user draws comp
 backend/
   agent/
     __init__.py       # Exports WhiteboardAgent
-    agent.py          # LangChain + Gemini vision agent (visual-only)
+    agent.py          # LangChain + Gemini agent with graph tools
   core/
     graph.py          # SystemDesignGraph — in-memory graph data structure
     session_store.py  # SessionStore — MongoDB write logic
-  graph_mcp/
-    server.py         # FastMCP server, all MCP tools, HTTP endpoints
+    frame_processor.py# FrameProcessor — CV frame filtering (standalone)
+  server/
+    app.py            # Starlette HTTP server + all endpoints
   main.py             # Entry point
   .env                # MONGODB_URI + GOOGLE_API_KEY (not committed)
 ```

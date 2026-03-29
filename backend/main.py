@@ -1,6 +1,6 @@
-"""Entry point — starts the MCP server."""
+"""Entry point — starts the HTTP server."""
 
-from graph_mcp.server import serve
+from server.app import serve
 
 if __name__ == "__main__":
     serve()

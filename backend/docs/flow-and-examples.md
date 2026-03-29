@@ -8,24 +8,23 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  User draws on whiteboard + speaks                                  │
+│  User draws on whiteboard                                           │
 │           │                                                         │
 │           ▼                                                         │
-│     AI Agent (Claude)                                               │
-│     Receives: { visual_delta, audio_transcription, timestamp }      │
+│     CV Pipeline (teammate)                                          │
+│     Compares frames → produces visual_delta text description        │
 │           │                                                         │
-│     Decides which graph operations to call                          │
+│           ▼  POST /agent/process-frame { session_id, visual_delta } │
+│     WhiteboardAgent (LangChain + Gemini 2.0 Flash)                  │
+│     Decides which graph tools to call                               │
 │           │                                                         │
-│           ▼  MCP protocol (HTTP to /mcp)                            │
+│           ▼  direct in-process calls                                │
 │  ┌─────────────────────────┐                                        │
-│  │  FastMCP Server         │                                        │
-│  │  localhost:8000         │                                        │
-│  │                         │                                        │
-│  │  _graph (RAM)  ◀───────── tool calls mutate this                 │
-│  │  _session_id            │                                        │
+│  │  SystemDesignGraph      │                                        │
+│  │  (per-session, in RAM)  │                                        │
 │  └─────────────────────────┘                                        │
 │           │                                                         │
-│     Frontend sends POST /end-session when user is done              │
+│     Frontend sends POST /end-session { session_id } when done       │
 │           │                                                         │
 │           ▼                                                         │
 │     MongoDB Atlas                                                   │
@@ -38,21 +37,25 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 
 ## The Three Phases
 
-### Phase 1 — Live session (in-memory only)
+### Phase 1 — Start session
 
-The server starts and creates a single empty `SystemDesignGraph` object and a UUID for this session. Nothing touches MongoDB yet.
+The frontend calls `POST /new-session`. The server creates a fresh `SystemDesignGraph`
+and a `WhiteboardAgent` bound to it, stores both under a UUID, and returns the
+`session_id`. All subsequent calls include this ID.
 
-As the user draws and speaks, the AI sends MCP tool calls. Each call is a function execution in Python that mutates the in-memory graph. These are instantaneous — no I/O, no network, just Python dict operations.
+### Phase 2 — Live session (in-memory only)
 
-### Phase 2 — BFS at session end
+As the user draws, the CV pipeline sends `POST /agent/process-frame` with a text
+description of each change. The agent runs a tool-call loop with Gemini: it keeps
+calling tools until Gemini stops requesting them, then returns one sentence spoken
+aloud to the user. All graph mutations are instantaneous Python dict operations —
+no I/O, no network.
 
-When the frontend calls `POST /end-session`, the server runs a BFS traversal starting from whichever node was set as the entry point. This walk produces `traversal_order` — the list of node IDs in logical sequence from the user-facing entry inward.
+### Phase 3 — BFS + MongoDB write
 
-### Phase 3 — MongoDB write
-
-The `SessionStore` makes two writes:
-1. One **session document** — the skeleton (edges + traversal order)
-2. One **node document per component** — the content (label, type, details, and its `traversal_index` in the BFS walk)
+When the frontend calls `POST /end-session`, the server runs a BFS traversal from
+the entry point node to produce `traversal_order`, then writes two MongoDB
+collections. The session is removed from memory after saving.
 
 ---
 
@@ -62,25 +65,25 @@ The `SessionStore` makes two writes:
 New component introduced?
 │
 ├── Is it the user-facing entry (browser, CDN, mobile app)?
-│     └── createNode() → setEntryPoint()
+│     └── create_node() → set_entry_point()
 │
 ├── Does it belong between two already-connected components?
-│     └── getGraphState() to confirm edge exists
-│           └── insertNodeBetween()
+│     └── get_graph_state() to confirm edge exists
+│           └── insert_node_between()
 │
 ├── Does it connect to something at the edge of the current graph?
-│     └── createNode() → addEdge()
+│     └── create_node() → add_edge()
 │
 └── Does it add more information to an existing component?
-      └── addDetailsToNode()
+      └── add_details_to_node()
 
 User removes or replaces a component?
 │
-├── Component removed entirely → deleteNode()
-└── Connection redirected → removeEdge() → addEdge()
+├── Component removed entirely → delete_node()
+└── Connection redirected → remove_edge() → add_edge()
 
 Unsure about current topology before a structural change?
-└── getGraphState() — always call this to fact-check first
+└── get_graph_state() — always call this to fact-check first
 ```
 
 ---
@@ -91,18 +94,18 @@ Unsure about current topology before a structural change?
 
 ---
 
-**Payload 1**
+**Frame 1 delta**
 ```json
 {
+  "session_id": "abc-123",
   "visual_delta": "A box labeled 'API' was drawn",
-  "audio_transcription": "I'm starting with an API service",
-  "current_timestamp": 5
+  "timestamp_ms": 5000
 }
 ```
 
-AI tool calls:
+Agent tool calls:
 ```python
-createNode("api", "API", "service")
+create_node("api", "API", "service")
 # → {"status": "created", "node": {"id": "api", "label": "API", "type": "service"}}
 ```
 
@@ -113,20 +116,20 @@ api
 
 ---
 
-**Payload 2**
+**Frame 2 delta**
 ```json
 {
+  "session_id": "abc-123",
   "visual_delta": "A box labeled 'PostgreSQL' was drawn with an arrow from 'API'",
-  "audio_transcription": "and it writes to a Postgres database",
-  "current_timestamp": 18
+  "timestamp_ms": 18000
 }
 ```
 
-AI tool calls:
+Agent tool calls:
 ```python
-createNode("db", "PostgreSQL", "database")
-addEdge("api", "db", "writes to")
-addDetailsToNode("db", {"technology": "PostgreSQL 15"})
+create_node("db", "PostgreSQL", "database")
+add_edge("api", "db", "writes to")
+add_details_to_node("db", {"technology": "PostgreSQL 15"})
 ```
 
 Graph state:
@@ -136,20 +139,20 @@ api ──[writes to]──▶ db
 
 ---
 
-**Payload 3**
+**Frame 3 delta**
 ```json
 {
+  "session_id": "abc-123",
   "visual_delta": "A box labeled 'Browser' was drawn with an arrow to 'API'",
-  "audio_transcription": "users access this from a browser",
-  "current_timestamp": 31
+  "timestamp_ms": 31000
 }
 ```
 
-AI tool calls:
+Agent tool calls:
 ```python
-createNode("browser", "Client Browser", "client")
-addEdge("browser", "api", "HTTP requests")
-setEntryPoint("browser")
+create_node("browser", "Client Browser", "client")
+add_edge("browser", "api", "HTTP requests")
+set_entry_point("browser")
 ```
 
 Graph state:
@@ -159,7 +162,7 @@ Entry point: browser
 BFS order:  [browser, api, db]
 ```
 
-Note: `browser` was created third, but `setEntryPoint` ensures BFS starts there. `db` gets `traversal_index: 2` not `0`.
+Note: `browser` was created third, but `set_entry_point` ensures BFS starts there.
 
 ---
 
@@ -169,11 +172,11 @@ MongoDB writes:
 ```json
 // sessions collection
 {
-  "_id": "f3a1...",
+  "_id": "abc-123",
   "traversal_order": ["browser", "api", "db"],
   "edges": [
-    {"from": "browser", "to": "api",  "label": "HTTP requests"},
-    {"from": "api",     "to": "db",   "label": "writes to"}
+    {"from": "browser", "to": "api", "label": "HTTP requests"},
+    {"from": "api",     "to": "db",  "label": "writes to"}
   ]
 }
 
@@ -187,36 +190,36 @@ MongoDB writes:
 
 ## Example 2 — Inserting a component between two connected ones
 
-**Scenario:** The user has `browser → api` already in the graph. They then say "actually there's a load balancer in front of the API."
+**Scenario:** The user has `browser → api` already in the graph. They draw a load balancer in front of the API.
 
 ---
 
-**Payload**
+**Frame delta**
 ```json
 {
+  "session_id": "abc-123",
   "visual_delta": "A 'Load Balancer' box was drawn between 'Browser' and 'API'",
-  "audio_transcription": "oh right, there's a load balancer sitting in front of the API",
-  "current_timestamp": 44
+  "timestamp_ms": 44000
 }
 ```
 
-AI first fact-checks the current topology:
+Agent first fact-checks the current topology:
 ```python
-getGraphState()
+get_graph_state()
 # Returns: edges: [{"from": "browser", "to": "api", "label": "HTTP requests"}]
 # Confirms: browser → api edge exists
 ```
 
-AI then inserts:
+Agent then inserts:
 ```python
-insertNodeBetween(
-    fromId="browser",
-    newId="lb",
-    newLabel="Load Balancer",
-    newType="load_balancer",
-    toId="api",
-    fromLabel="HTTP requests",
-    toLabel="routes to"
+insert_node_between(
+    from_id="browser",
+    new_id="lb",
+    new_label="Load Balancer",
+    new_type="load_balancer",
+    to_id="api",
+    from_label="HTTP requests",
+    to_label="routes to",
 )
 ```
 
@@ -236,26 +239,26 @@ BFS order: [browser, lb, api, db]
 
 ## Example 3 — User corrects a mistake
 
-**Scenario:** The user says "actually, forget the direct connection to Postgres — I want the API to go through Redis first for caching."
+**Scenario:** The user erases the direct API→DB connection and draws a Redis cache in between.
 
 ---
 
-**Payload**
+**Frame delta**
 ```json
 {
-  "visual_delta": "Arrow from 'API' to 'PostgreSQL' erased, new box 'Redis' drawn",
-  "audio_transcription": "let me remove the direct DB connection, add a Redis cache in between",
-  "current_timestamp": 67
+  "session_id": "abc-123",
+  "visual_delta": "Arrow from 'API' to 'PostgreSQL' erased, new box 'Redis' drawn with arrows to/from 'API' and 'PostgreSQL'",
+  "timestamp_ms": 67000
 }
 ```
 
-AI tool calls:
+Agent tool calls:
 ```python
-removeEdge("api", "db")
-createNode("cache", "Redis Cache", "cache")
-addEdge("api", "cache", "reads/writes")
-addEdge("cache", "db", "cache miss → writes to")
-addDetailsToNode("cache", {"technology": "Redis 7", "strategy": "write-through"})
+remove_edge("api", "db")
+create_node("cache", "Redis Cache", "cache")
+add_edge("api", "cache", "reads/writes")
+add_edge("cache", "db", "cache miss → writes to")
+add_details_to_node("cache", {"technology": "Redis 7", "strategy": "write-through"})
 ```
 
 Graph state after:
@@ -269,56 +272,38 @@ browser → lb → api → cache → db
 
 ## Example 4 — Branching design (fan-out)
 
-**Scenario:** An API that writes to two different stores — one relational, one object storage.
+**Scenario:** An API that writes to two different stores.
 
 ---
 
-**Payload**
+**Frame delta**
 ```json
 {
+  "session_id": "abc-123",
   "visual_delta": "Two arrows drawn from 'API': one to 'PostgreSQL', one to 'S3'",
-  "audio_transcription": "the API writes user records to Postgres, and uploads to S3",
-  "current_timestamp": 90
+  "timestamp_ms": 90000
 }
 ```
 
-AI tool calls:
+Agent tool calls:
 ```python
-createNode("db",  "PostgreSQL", "database")
-createNode("s3",  "S3 Bucket",  "storage")
-addEdge("api", "db", "writes user records")
-addEdge("api", "s3", "uploads files")
-addDetailsToNode("db", {"role": "user records"})
-addDetailsToNode("s3", {"role": "file uploads", "technology": "AWS S3"})
+create_node("db", "PostgreSQL", "database")
+create_node("s3", "S3 Bucket",  "storage")
+add_edge("api", "db", "writes user records")
+add_edge("api", "s3", "uploads files")
+add_details_to_node("db", {"role": "user records"})
+add_details_to_node("s3", {"role": "file uploads", "technology": "AWS S3"})
 ```
 
 Graph state:
 ```
 browser → lb → api ──[writes user records]──▶ db
-                  └──[uploads files]────────▶ s3
+                   └──[uploads files]────────▶ s3
 ```
 
 BFS order from `browser`: `[browser, lb, api, db, s3]`
 
-Both `db` and `s3` are at depth 3 from the entry point. BFS visits them in the order their edges were added — `db` before `s3` here, giving them `traversal_index` 3 and 4 respectively.
-
----
-
-## Example 5 — Socratic question (AI detects stall)
-
-**Scenario:** The user has been silent for two consecutive payload intervals. The graph has an API and a database but no client or cache.
-
-The AI inspects the graph:
-```python
-getGraphState()
-# Returns: nodes: [api, db], entry_point: null
-```
-
-It identifies the missing entry point and speaks:
-
-> "I can see your API and database — where does traffic enter the system? Is there a client, a CDN, or a load balancer at the front?"
-
-This is a Socratic question triggered by the rule in the system prompt: if no changes occur for two or more consecutive intervals, ask about the most critical missing component.
+Both `db` and `s3` are at depth 3. BFS visits them in the order their edges were added.
 
 ---
 
@@ -326,17 +311,18 @@ This is a Socratic question triggered by the rule in the system prompt: if no ch
 
 | Situation | What to do |
 |-----------|------------|
-| User mentions browser, mobile app, CDN first | `createNode` + `setEntryPoint` immediately |
-| User draws backend components first, then mentions client | `createNode` client node, `setEntryPoint`, then connect with `addEdge` |
-| Entry point node is deleted | Call `setEntryPoint` again on the new logical head |
+| User mentions browser, mobile app, CDN first | `create_node` + `set_entry_point` immediately |
+| User draws backend components first, then mentions client | `create_node` client node, `set_entry_point`, then connect with `add_edge` |
+| Entry point node is deleted | Call `set_entry_point` again on the new logical head |
 | Design has no clear single entry (e.g. event-driven) | Set the event source or message broker as entry point |
-| Two payloads with no changes | Call `getGraphState`, identify the missing critical component, ask a question |
 
 ---
 
 ## BFS Traversal and `traversal_index`
 
-`traversal_index` is the position of a node in the BFS walk from the entry point. It captures the user's conceptual order of thinking — from the user-facing layer inward to the data layer.
+`traversal_index` is the position of a node in the BFS walk from the entry point.
+It captures the user's conceptual order — from the user-facing layer inward to
+the data layer.
 
 ```
 Entry point: browser (index 0)
@@ -346,6 +332,9 @@ Entry point: browser (index 0)
       → s3   (index 4)
 ```
 
-This index is used for scoring: two users who both built a 5-node design can be compared node-by-node at the same depth, independent of what they named things or what order they drew them.
+This index is used for scoring: two users who both built a 5-node design can be
+compared node-by-node at the same depth, independent of what they named things
+or what order they drew them.
 
-Disconnected nodes (components with no path from the entry point) receive `traversal_index: -1` in MongoDB.
+Disconnected nodes (no path from the entry point) receive `traversal_index: -1`
+in MongoDB.

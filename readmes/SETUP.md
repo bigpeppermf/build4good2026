@@ -51,8 +51,8 @@ uv run main.py
 
 Expected output:
 ```
-Session ID   : <uuid>
-MCP          : http://localhost:8000/mcp
+Docs         : GET  http://localhost:8000/docs
+New session  : POST http://localhost:8000/new-session
 Process frame: POST http://localhost:8000/agent/process-frame
 End session  : POST http://localhost:8000/end-session
 ```
@@ -115,9 +115,9 @@ npm run lint
 ```
 build4good2026/
 ├── backend/              # Python backend
-│   ├── agent/            # LangChain + Gemini vision agent
-│   ├── core/             # In-memory graph + MongoDB session store
-│   ├── graph_mcp/        # FastMCP server + HTTP endpoints
+│   ├── agent/            # LangChain + Gemini agent (graph tools)
+│   ├── core/             # In-memory graph, MongoDB store, CV frame filter
+│   ├── server/           # Starlette HTTP server + endpoints
 │   ├── docs/             # API reference + flow examples
 │   ├── tests/            # pytest test suite
 │   ├── main.py           # Entry point  →  uv run main.py
