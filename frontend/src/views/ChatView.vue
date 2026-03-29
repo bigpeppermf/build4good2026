@@ -1,15 +1,71 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, reactive, nextTick } from "vue";
 
-const messages = ref<{ role: "user" | "assistant"; text: string }[]>([]);
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  displayedText: string;
+  streaming: boolean;
+}
+
+const messages = ref<ChatMessage[]>([]);
 const input = ref("");
+const isStreaming = ref(false);
+const messagesEl = ref<HTMLElement | null>(null);
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (messagesEl.value) {
+      messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+    }
+  });
+}
+
+function streamText(msgIndex: number, fullText: string) {
+  const chars = Array.from(fullText);
+  let i = 0;
+
+  const interval = setInterval(() => {
+    if (i < chars.length) {
+      // batch a few characters per tick for natural speed
+      const end = Math.min(i + 3, chars.length);
+      messages.value[msgIndex].displayedText += chars.slice(i, end).join("");
+      i = end;
+      scrollToBottom();
+    } else {
+      messages.value[msgIndex].streaming = false;
+      isStreaming.value = false;
+      clearInterval(interval);
+    }
+  }, 30);
+}
 
 function sendMessage() {
   const text = input.value.trim();
-  if (!text) return;
-  messages.value.push({ role: "user", text });
+  if (!text || isStreaming.value) return;
+
+  messages.value.push(reactive({
+    role: "user",
+    text,
+    displayedText: text,
+    streaming: false,
+  }));
   input.value = "";
-  // TODO: wire to backend API and push assistant response
+  scrollToBottom();
+
+  // TODO: replace with real backend call
+  isStreaming.value = true;
+  setTimeout(() => {
+    const response = "This is a placeholder response. Once the backend is connected, real AI responses will stream in here word by word, just like this animation shows.";
+    messages.value.push(reactive({
+      role: "assistant",
+      text: response,
+      displayedText: "",
+      streaming: true,
+    }));
+    scrollToBottom();
+    streamText(messages.value.length - 1, response);
+  }, 500);
 }
 </script>
 
@@ -43,7 +99,7 @@ function sendMessage() {
       <h1 class="panel-title">Chat</h1>
 
       <div class="chat-window">
-        <div class="chat-messages">
+        <div ref="messagesEl" class="chat-messages">
           <p v-if="messages.length === 0" class="chat-empty">
             No messages yet. Start a conversation.
           </p>
@@ -51,10 +107,14 @@ function sendMessage() {
             v-for="(msg, i) in messages"
             :key="i"
             class="chat-bubble"
-            :class="msg.role"
+            :class="[msg.role, { streaming: msg.streaming }]"
           >
-            <span class="chat-role">{{ msg.role === "user" ? "You" : "AI" }}</span>
-            <p class="chat-text">{{ msg.text }}</p>
+            <div class="chat-content" :class="{ 'has-speck': msg.role === 'assistant' }">
+              <span v-if="msg.role === 'assistant'" class="ai-speck" />
+              <p class="chat-text">
+                {{ msg.displayedText }}<span v-if="msg.streaming" class="cursor" />
+              </p>
+            </div>
           </div>
         </div>
 
@@ -64,8 +124,9 @@ function sendMessage() {
             class="chat-input"
             type="text"
             placeholder="Type a message…"
+            :disabled="isStreaming"
           />
-          <button type="submit" class="btn-send" :disabled="!input.trim()">
+          <button type="submit" class="btn-send" :disabled="!input.trim() || isStreaming">
             Send
           </button>
         </form>
@@ -133,30 +194,44 @@ function sendMessage() {
 
 .chat-bubble {
   max-width: 75%;
-  padding: 0.65rem 0.85rem;
-  border-radius: 4px;
-  border: 1px solid var(--line);
+  padding: 0.35rem 0;
 }
 
 .chat-bubble.user {
   align-self: flex-end;
-  background: rgb(255 255 255 / 0.06);
+  background: rgb(255 255 255 / 0.08);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 0.5rem 0.85rem;
 }
 
 .chat-bubble.assistant {
   align-self: flex-start;
-  background: var(--bg-soft, rgb(255 255 255 / 0.03));
 }
 
-.chat-role {
-  display: block;
-  margin-bottom: 0.25rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.5625rem, 0.55rem + 0.1vw, 0.625rem);
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
+.chat-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.ai-speck {
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.45em;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent, #e0704e), var(--pop, #c45a3a));
+  box-shadow: 0 0 6px rgb(224 112 78 / 0.4);
+}
+
+.chat-bubble.streaming .ai-speck {
+  animation: speck-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes speck-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.3); }
 }
 
 .chat-text {
@@ -164,7 +239,24 @@ function sendMessage() {
   font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
   line-height: 1.55;
   color: var(--ink);
+  white-space: pre-wrap;
 }
+
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  background: var(--ink);
+  vertical-align: text-bottom;
+  animation: blink 0.6s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 
 .chat-input-bar {
   display: flex;

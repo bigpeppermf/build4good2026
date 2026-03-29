@@ -18,7 +18,8 @@ const {
   uploadState,
   sessionPlaybackUrl,
   streamWsConnected,
-  chunksSentCount,
+  audioChunksSentCount,
+  imageFramesSentCount,
   sessionTimeLabel,
   startSession,
   stopSession,
@@ -57,9 +58,10 @@ function handleClose() {
         </h2>
         <p class="capture-hint">
           Setup asks for camera and microphone. Prefer the rear/environment camera on
-          a phone. Use the frame overlay to align the board. The timer runs while the
-          session is live. Stop flushes the recorder and closes the stream—see README
-          for the WebSocket contract your backend should implement.
+          a phone. Use the frame overlay to align the board. While live, the app sends
+          the full audio stream over WebSocket and a JPEG still from the camera every
+          15 seconds (not continuous video). See
+          <code class="sessions-code">readmes/STREAMING.md</code> for the wire format.
         </p>
 
         <div class="capture-actions">
@@ -100,12 +102,11 @@ function handleClose() {
           class="playback"
         >
           <p class="playback-label">
-            Local replay (same WebM the browser recorded)
+            Local replay (audio only; stills are sent to the server, not kept here)
           </p>
-          <video
-            class="playback-video"
+          <audio
+            class="playback-audio"
             controls
-            playsinline
             :src="sessionPlaybackUrl"
           />
         </div>
@@ -140,7 +141,9 @@ function handleClose() {
         >
           <span class="stat">Stream: {{ streamWsConnected ? "connected" : "…" }}</span>
           <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Chunks sent: {{ chunksSentCount }}</span>
+          <span class="stat">Audio chunks: {{ audioChunksSentCount }}</span>
+          <span class="stats-sep" aria-hidden="true">·</span>
+          <span class="stat">Images: {{ imageFramesSentCount }}</span>
         </div>
 
         <div
@@ -744,11 +747,10 @@ function handleClose() {
   color: var(--ink-muted);
 }
 
-.playback-video {
+.playback-audio {
   display: block;
   width: 100%;
   max-width: min(28rem, 100%);
-  max-height: min(50vh, 24rem);
   border-radius: 4px;
   border: 1px solid var(--line);
   background: var(--void);
