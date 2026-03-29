@@ -49,12 +49,14 @@ cd backend
 uv run main.py
 ```
 
-Expected output:
+Expected output (paths may include `process-capture` and `practice/stream`):
 ```
-Docs         : GET  http://localhost:8000/docs
-New session  : POST http://localhost:8000/new-session
-Process frame: POST http://localhost:8000/agent/process-frame
-End session  : POST http://localhost:8000/end-session
+Docs            : GET  http://localhost:8000/docs
+New session     : POST http://localhost:8000/new-session
+Process frame   : POST http://localhost:8000/agent/process-frame
+Process capture : POST http://localhost:8000/agent/process-capture
+End session     : POST http://localhost:8000/end-session
+Practice stream : WS   ws://localhost:8000/practice/stream
 ```
 
 ### Frontend (Vue dev server)
@@ -66,8 +68,9 @@ npm run dev
 
 Open **http://localhost:5173** in your browser.
 
-> The Vite dev server proxies `/api/*` → `http://localhost:8000/*` so the
-> frontend talks to the Python backend without CORS issues.
+> The Vite dev server proxies `/api/*` → `http://localhost:8000` with the `/api`
+> prefix stripped, so `/api/new-session` becomes `http://localhost:8000/new-session`.
+> WebSocket upgrades use the same proxy for `/api/practice/stream`.
 
 ---
 
@@ -113,7 +116,7 @@ npm run lint
 ## Layout
 
 ```
-build4good2026/
+mirage/
 ├── backend/              # Python backend
 │   ├── agent/            # LangChain + Gemini agent (graph tools)
 │   ├── core/             # In-memory graph, MongoDB store, CV frame filter

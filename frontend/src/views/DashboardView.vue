@@ -1,44 +1,190 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
-import { useWhiteboardSession } from "../composables/useWhiteboardSession";
-import type { PastSessionSummary } from "../types/pastSession";
-
-/** Assign from API / store when ready, e.g. pastSessions.value = await fetchHistory() */
-const pastSessions = ref<PastSessionSummary[]>([]);
-
+import { computed, ref } from "vue";
+import { useRouter } from "vue-router";
+import {
+  useWhiteboardSession,
+  type FrameCropNorm,
+} from "../composables/useWhiteboardSession";
 const {
   videoRef,
   activeStream,
   isSettingUp,
+  isBeginningSession,
   isSessionActive,
   errorMessage,
   uploadMessage,
   uploadOk,
   uploadState,
-  sessionPlaybackUrl,
-  sessionId,
+  frameCropNorm,
   verbalResponses,
-  ttsEnabled,
   lastCaptureError,
-  audioChunksRecordedCount,
-  imageFramesSentCount,
+  lastCaptureProcessStatus,
   sessionTimeLabel,
-  startSession,
+  openCameraSetup,
+  beginSession,
   stopSession,
 } = useWhiteboardSession();
 
 const router = useRouter();
 const cameraOpen = ref(false);
 
-function handleSetup() {
+const previewRef = ref<HTMLElement | null>(null);
+
+const MIN_FR = 0.08;
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function clampFrame(r: FrameCropNorm): FrameCropNorm {
+  let { left, top, width, height } = r;
+  width = clamp(width, MIN_FR, 1);
+  height = clamp(height, MIN_FR, 1);
+  left = clamp(left, 0, 1 - width);
+  top = clamp(top, 0, 1 - height);
+  return { left, top, width, height };
+}
+
+const frameStyle = computed(() => ({
+  left: `${frameCropNorm.value.left * 100}%`,
+  top: `${frameCropNorm.value.top * 100}%`,
+  width: `${frameCropNorm.value.width * 100}%`,
+  height: `${frameCropNorm.value.height * 100}%`,
+}));
+
+const captureFrameAria = computed(() => {
+  switch (lastCaptureProcessStatus.value) {
+    case "success":
+      return "Crop frame. Last still was processed successfully.";
+    case "error":
+      return "Crop frame. Last still failed to process.";
+    default:
+      return "Crop frame. Drag to move or use handles to resize.";
+  }
+});
+
+type DragKind = "move" | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+const dragState = ref<{
+  kind: DragKind;
+  frame0: FrameCropNorm;
+  nx0: number;
+  ny0: number;
+} | null>(null);
+
+function normFromEvent(e: PointerEvent, el: HTMLElement) {
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) {
+    return { nx: 0, ny: 0 };
+  }
+  return {
+    nx: (e.clientX - r.left) / r.width,
+    ny: (e.clientY - r.top) / r.height,
+  };
+}
+
+function startDrag(kind: DragKind, e: PointerEvent) {
+  if (!previewRef.value) {
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  const { nx, ny } = normFromEvent(e, previewRef.value);
+  dragState.value = {
+    kind,
+    frame0: { ...frameCropNorm.value },
+    nx0: nx,
+    ny0: ny,
+  };
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  window.addEventListener("pointermove", onDragMove);
+  window.addEventListener("pointerup", onDragEnd);
+  window.addEventListener("pointercancel", onDragEnd);
+}
+
+function onDragMove(e: PointerEvent) {
+  if (!dragState.value || !previewRef.value) {
+    return;
+  }
+  const { nx, ny } = normFromEvent(e, previewRef.value);
+  const { kind, frame0: f0 } = dragState.value;
+  const right = f0.left + f0.width;
+  const bottom = f0.top + f0.height;
+  let r: FrameCropNorm = { ...f0 };
+
+  switch (kind) {
+    case "move": {
+      const d = dragState.value;
+      r.left = f0.left + (nx - d.nx0);
+      r.top = f0.top + (ny - d.ny0);
+      break;
+    }
+    case "se":
+      r.width = nx - f0.left;
+      r.height = ny - f0.top;
+      break;
+    case "nw":
+      r.left = nx;
+      r.top = ny;
+      r.width = right - nx;
+      r.height = bottom - ny;
+      break;
+    case "ne":
+      r.top = ny;
+      r.width = nx - f0.left;
+      r.height = bottom - ny;
+      break;
+    case "sw":
+      r.left = nx;
+      r.width = right - nx;
+      r.height = ny - f0.top;
+      break;
+    case "n":
+      r.top = ny;
+      r.height = bottom - ny;
+      break;
+    case "s":
+      r.height = ny - f0.top;
+      break;
+    case "w":
+      r.left = nx;
+      r.width = right - nx;
+      break;
+    case "e":
+      r.width = nx - f0.left;
+      break;
+    default:
+      return;
+  }
+  frameCropNorm.value = clampFrame(r);
+}
+
+function onDragEnd() {
+  dragState.value = null;
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragEnd);
+  window.removeEventListener("pointercancel", onDragEnd);
+}
+
+function handleNewSession() {
   cameraOpen.value = true;
-  startSession();
+  void openCameraSetup();
+}
+
+function handleStartSession() {
+  void beginSession();
 }
 
 function handleClose() {
   stopSession();
   cameraOpen.value = false;
+}
+
+function goToPlaceholderChat() {
+  void router.push({
+    name: "chat",
+    query: { session: "placeholder-1" },
+  });
 }
 </script>
 
@@ -49,6 +195,7 @@ function handleClose() {
         Practice session
       </h1>
 
+      <div class="dashboard-main">
       <section
         class="capture"
         aria-labelledby="capture-title"
@@ -57,25 +204,21 @@ function handleClose() {
           id="capture-title"
           class="capture-title"
         >
-          Whiteboard capture
+          Whiteboard practice session
         </h2>
-        <p class="capture-hint">
-          Setup calls the backend to create a session, then opens the camera. Each
-          still frame (every 15s) is posted to the CV pipeline; the agent’s
-          <strong class="capture-strong">verbal response</strong> appears below and can
-          be read aloud. Audio is recorded locally for replay; only HTTP API calls hit the
-          server. Stop ends the session with
-          <code class="sessions-code">POST /end-session</code>.
+        <p class="capture-desc">
+          Open your camera, frame the board, then start to stream captures to the agent.
+          Each still is analyzed on a timer; responses appear below when you return.
         </p>
 
         <div class="capture-actions">
           <button
             type="button"
-            class="btn-setup"
-            :disabled="isSettingUp || isSessionActive"
-            @click="handleSetup"
+            class="btn-new-session"
+            :disabled="isSettingUp || isSessionActive || cameraOpen"
+            @click="handleNewSession"
           >
-            {{ isSettingUp ? "Opening camera…" : "Setup" }}
+            {{ isSettingUp ? "Opening camera…" : "New session" }}
           </button>
         </div>
 
@@ -100,20 +243,6 @@ function handleClose() {
         >
           {{ uploadMessage }}
         </p>
-
-        <div
-          v-if="sessionPlaybackUrl"
-          class="playback"
-        >
-          <p class="playback-label">
-            Local replay (audio only; stills are sent to the server, not kept here)
-          </p>
-          <audio
-            class="playback-audio"
-            controls
-            :src="sessionPlaybackUrl"
-          />
-        </div>
 
         <div
           v-if="verbalResponses.length > 0"
@@ -160,29 +289,6 @@ function handleClose() {
           {{ errorMessage }}
         </p>
 
-        <div
-          v-if="isSessionActive"
-          class="camera-stats"
-          aria-live="polite"
-        >
-          <span class="stat">Session: {{ sessionId ? sessionId.slice(0, 8) + "…" : "—" }}</span>
-          <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Audio chunks: {{ audioChunksRecordedCount }}</span>
-          <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Frames posted: {{ imageFramesSentCount }}</span>
-        </div>
-
-        <label
-          v-if="isSessionActive"
-          class="tts-toggle"
-        >
-          <input
-            v-model="ttsEnabled"
-            type="checkbox"
-          >
-          <span>Speak responses (TTS)</span>
-        </label>
-
         <p
           v-if="lastCaptureError && isSessionActive"
           class="camera-capture-error"
@@ -193,6 +299,7 @@ function handleClose() {
 
         <div
           v-show="activeStream"
+          ref="previewRef"
           class="camera-preview"
         >
           <video
@@ -206,37 +313,114 @@ function handleClose() {
             class="frame-guide"
             aria-hidden="true"
           >
-            <div class="frame-guide-target">
-              <span class="frame-corner frame-corner--tl" />
-              <span class="frame-corner frame-corner--tr" />
-              <span class="frame-corner frame-corner--bl" />
-              <span class="frame-corner frame-corner--br" />
+            <div
+              class="frame-crop-box"
+              :class="{
+                'frame-crop-box--process-ok': lastCaptureProcessStatus === 'success',
+                'frame-crop-box--process-err': lastCaptureProcessStatus === 'error',
+              }"
+              :style="frameStyle"
+              :aria-label="captureFrameAria"
+            >
+              <span
+                class="frame-corner-decor frame-corner-decor--tl"
+                aria-hidden="true"
+              />
+              <span
+                class="frame-corner-decor frame-corner-decor--tr"
+                aria-hidden="true"
+              />
+              <span
+                class="frame-corner-decor frame-corner-decor--bl"
+                aria-hidden="true"
+              />
+              <span
+                class="frame-corner-decor frame-corner-decor--br"
+                aria-hidden="true"
+              />
+              <div
+                class="frame-move"
+                @pointerdown="startDrag('move', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--nw"
+                aria-label="Resize frame northwest"
+                @pointerdown="startDrag('nw', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--n"
+                aria-label="Resize frame north"
+                @pointerdown="startDrag('n', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--ne"
+                aria-label="Resize frame northeast"
+                @pointerdown="startDrag('ne', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--e"
+                aria-label="Resize frame east"
+                @pointerdown="startDrag('e', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--se"
+                aria-label="Resize frame southeast"
+                @pointerdown="startDrag('se', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--s"
+                aria-label="Resize frame south"
+                @pointerdown="startDrag('s', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--sw"
+                aria-label="Resize frame southwest"
+                @pointerdown="startDrag('sw', $event)"
+              />
+              <button
+                type="button"
+                class="frame-handle frame-handle--w"
+                aria-label="Resize frame west"
+                @pointerdown="startDrag('w', $event)"
+              />
             </div>
-            <p class="frame-guide-caption">
-              Fit whiteboard inside frame
-            </p>
           </div>
           <div
             v-if="isSessionActive"
-            class="timer-chip"
+            class="live-timer-cluster"
             role="status"
-            :aria-label="`Elapsed ${sessionTimeLabel}`"
+            :aria-label="`Live, elapsed ${sessionTimeLabel}`"
           >
-            {{ sessionTimeLabel }}
+            <p class="recording-badge">
+              Live
+            </p>
+            <div class="timer-chip">
+              {{ sessionTimeLabel }}
+            </div>
           </div>
-          <p
-            v-if="isSessionActive"
-            class="recording-badge"
-          >
-            Live
-          </p>
         </div>
 
         <div class="camera-bottom">
           <button
+            v-if="!isSessionActive"
+            type="button"
+            class="btn-start"
+            :disabled="!activeStream || isBeginningSession || isSettingUp"
+            @click="handleStartSession"
+          >
+            {{ isBeginningSession ? "Starting…" : "Start session" }}
+          </button>
+          <button
+            v-else
             type="button"
             class="btn-stop"
-            :disabled="!isSessionActive"
             @click="handleClose"
           >
             Stop session
@@ -247,89 +431,28 @@ function handleClose() {
       </section>
 
       <section
-        class="sessions-section"
-        aria-labelledby="sessions-heading"
+        class="recent-sessions"
+        aria-labelledby="recent-sessions-title"
       >
         <h2
-          id="sessions-heading"
-          class="sessions-title"
+          id="recent-sessions-title"
+          class="recent-sessions-title"
         >
-          Previous sessions
+          Recent sessions
         </h2>
-        <p class="sessions-intro">
-          When recording and backend processing are wired up, push completed sessions
-          into <code class="sessions-code">pastSessions</code> (see
-          <code class="sessions-code">src/types/pastSession.ts</code>). Each row can
-          mount analysis and feedback UI in the slots below—empty bodies are
-          intentional until you plug in presenters.
+        <p class="recent-sessions-placeholder">
+          No saved sessions yet — this is a placeholder until history is wired up.
         </p>
-        <ul
-          v-if="pastSessions.length > 0"
-          class="sessions-list"
-        >
-          <li
-            v-for="session in pastSessions"
-            :key="session.id"
-            class="session-card"
-          >
-            <div class="session-card-head">
-              <span class="session-primary">{{ session.title ?? session.id }}</span>
-              <time
-                v-if="session.recordedAt"
-                class="session-time"
-                :datetime="session.recordedAt"
-              >{{ session.recordedAt }}</time>
-            </div>
-            <section
-              v-if="session.analysis != null"
-              class="session-slot"
-              :aria-label="`Analysis for session ${session.id}`"
-            >
-              <h3 class="session-slot-title">
-                Analysis
-              </h3>
-              <div
-                class="session-slot-body"
-                data-mount="session-analysis"
-              />
-            </section>
-            <section
-              v-if="session.feedback != null"
-              class="session-slot"
-              :aria-label="`Feedback for session ${session.id}`"
-            >
-              <h3 class="session-slot-title">
-                Feedback
-              </h3>
-              <div
-                class="session-slot-body"
-                data-mount="session-feedback"
-              />
-            </section>
-          </li>
-        </ul>
-        <p
-          v-else
-          class="sessions-empty"
-        >
-          No sessions loaded yet.
-        </p>
-
         <button
           type="button"
-          class="btn-chat"
-          @click="router.push({ name: 'chat' })"
+          class="btn-recent-chat"
+          @click="goToPlaceholderChat"
         >
-          Open chat
+          Open placeholder chat
         </button>
       </section>
+      </div>
 
-      <RouterLink
-        to="/"
-        class="back-link"
-      >
-        ← Back to home
-      </RouterLink>
     </div>
   </div>
 </template>
@@ -345,206 +468,154 @@ function handleClose() {
   width: 100%;
   max-width: 100%;
   padding: 0 clamp(1rem, 3vw, 2rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(1rem, 2.5vw, 1.35rem);
 }
 
 .dashboard-title {
-  margin: 0 0 clamp(1rem, 3vw, 1.5rem);
+  width: 100%;
+  max-width: min(72rem, 100%);
+  margin: 0;
   font-family: var(--font-display);
   font-size: clamp(1.65rem, 4vw + 0.5rem, 2.35rem);
   font-weight: 700;
-  color: var(--ink);
+  color: var(--pop);
   letter-spacing: -0.03em;
   line-height: 1.1;
   text-align: left;
 }
 
-.capture {
-  margin: 0 0 clamp(1.5rem, 4vw, 2rem);
-  padding: clamp(1.1rem, 3.5vw, 1.35rem) clamp(1rem, 3.5vw, 1.35rem) clamp(1.25rem, 3.5vw, 1.5rem);
-  border: 1px solid var(--rose-line);
-  border-radius: 4px;
-  background-color: var(--bg-elevated);
-  box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.05) inset,
-    0 24px 48px -32px rgb(0 0 0 / 0.5);
-}
-
-.sessions-section {
-  margin: 0 0 clamp(1.5rem, 4vw, 2rem);
-  padding: clamp(1.1rem, 3.5vw, 1.35rem) clamp(1rem, 3.5vw, 1.35rem) clamp(1.25rem, 3.5vw, 1.5rem);
-  border: 1px solid var(--rose-line);
-  border-radius: 4px;
-  background-color: var(--bg-elevated);
-  box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.05) inset,
-    0 24px 48px -32px rgb(0 0 0 / 0.5);
-}
-
-.sessions-title {
-  margin: 0 0 0.5rem;
-  font-size: clamp(1rem, 0.95rem + 0.3vw, 1.1rem);
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.sessions-intro {
-  margin: 0 0 clamp(1rem, 3vw, 1.25rem);
-  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
-  line-height: 1.55;
-  color: var(--ink-muted);
-}
-
-.sessions-code {
-  font-family: var(--font-mono);
-  font-size: 0.8em;
-  padding: 0.1em 0.35em;
-  border-radius: 3px;
-  background: rgb(255 255 255 / 0.06);
-  border: 1px solid var(--line);
-  word-break: break-all;
-}
-
-.sessions-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: clamp(0.75rem, 2vw, 1rem);
-}
-
-.session-card {
-  margin: 0;
-  padding: clamp(0.85rem, 2.5vw, 1rem);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background-color: var(--bg-soft);
-}
-
-.session-card-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.35rem 1rem;
-  margin-bottom: 0.65rem;
-}
-
-.session-primary {
-  font-family: var(--font-display);
-  font-size: clamp(0.9375rem, 0.9rem + 0.2vw, 1.0625rem);
-  font-weight: 600;
-  color: var(--ink);
-  word-break: break-word;
-}
-
-.session-time {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.04em;
-  color: var(--ink-muted);
-}
-
-.session-slot {
-  margin-top: 0.65rem;
-  padding-top: 0.65rem;
-  border-top: 1px solid var(--line);
-}
-
-.session-slot-title {
-  margin: 0 0 0.4rem;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.session-slot-body {
-  min-height: 2.5rem;
-  border-radius: 3px;
-  border: 1px dashed var(--line-strong);
-  background: rgb(0 0 0 / 0.15);
-}
-
-.btn-chat {
-  margin-top: clamp(1rem, 3vw, 1.25rem);
-  min-height: 2.75rem;
+.dashboard-main {
   width: 100%;
-  padding: 0.55rem 1.15rem;
-  font-family: var(--font-sans);
-  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ink);
-  background: rgb(255 255 255 / 0.04);
-  border: 1px dashed var(--line-strong);
-  border-radius: 4px;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease;
+  max-width: min(72rem, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(1.25rem, 3.5vw, 1.75rem);
+  align-items: start;
 }
 
-.btn-chat:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent);
+@media (min-width: 960px) {
+  .dashboard-main {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
-.btn-chat:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn-chat:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.sessions-empty {
+.capture {
   margin: 0;
-  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
-  color: var(--ink-muted);
-  line-height: 1.55;
+  min-width: 0;
+  padding: clamp(1.25rem, 3.5vw, 1.75rem) clamp(1.25rem, 3.5vw, 1.75rem);
+  border: 1px dashed rgb(224 112 86 / 0.55);
+  border-radius: 4px;
+  background-color: rgb(224 112 86 / 0.07);
+  box-shadow:
+    0 1px 0 rgb(224 112 86 / 0.12) inset,
+    0 24px 48px -32px rgb(0 0 0 / 0.5);
+  text-align: center;
 }
 
 .capture-title {
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.65rem;
   font-size: clamp(1rem, 0.95rem + 0.3vw, 1.1rem);
-  font-weight: 600;
-  color: var(--ink);
+  font-weight: 700;
+  color: var(--pop);
 }
 
-.capture-hint {
-  margin: 0 0 clamp(1rem, 3vw, 1.25rem);
+.capture-desc {
+  margin: 0 auto 1.15rem;
+  max-width: min(36rem, 100%);
+  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
+  line-height: 1.55;
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.recent-sessions {
+  margin: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: clamp(1.25rem, 3.5vw, 1.75rem) clamp(1.25rem, 3.5vw, 1.75rem);
+  border: 1px dashed rgb(224 112 86 / 0.55);
+  border-radius: 4px;
+  background-color: rgb(224 112 86 / 0.06);
+  box-shadow:
+    0 1px 0 rgb(224 112 86 / 0.1) inset;
+  text-align: center;
+}
+
+.recent-sessions-title {
+  margin: 0 0 0.65rem;
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  font-weight: 600;
+  color: var(--pop);
+  letter-spacing: -0.02em;
+}
+
+.recent-sessions-placeholder {
+  margin: 0 auto 1rem;
+  max-width: 100%;
   font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
   line-height: 1.55;
   color: var(--ink-muted);
 }
 
-.capture-strong {
-  font-weight: 600;
+.btn-recent-chat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.65rem 1.15rem;
+  width: min(100%, 20rem);
+  font-family: var(--font-display);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   color: var(--ink);
+  background: var(--surface-faint);
+  border: 1px dashed rgb(224 112 86 / 0.65);
+  border-radius: 4px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    color 0.2s ease;
+}
+
+.btn-recent-chat:hover {
+  border-color: var(--pop);
+  color: var(--pop);
+  background: rgb(224 112 86 / 0.12);
+}
+
+.btn-recent-chat:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .verbal-panel {
   margin-top: clamp(1rem, 3vw, 1.35rem);
   padding: clamp(0.85rem, 2.5vw, 1rem);
-  border: 1px solid var(--line);
+  border: 1px dashed rgb(224 112 86 / 0.4);
   border-radius: 4px;
-  background: var(--bg-soft);
+  background: rgb(224 112 86 / 0.06);
+  text-align: left;
 }
 
 .verbal-panel-title {
   margin: 0 0 0.65rem;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--ink-muted);
+  color: rgb(224 112 86 / 0.95);
 }
 
 .verbal-list {
@@ -565,6 +636,7 @@ function handleClose() {
   display: block;
   font-family: var(--font-mono);
   font-size: 0.625rem;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.06em;
   color: var(--ink-muted);
   margin-bottom: 0.2rem;
@@ -581,66 +653,54 @@ function handleClose() {
   display: flex;
   flex-wrap: wrap;
   gap: 0.65rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.25rem;
+  justify-content: center;
+  align-items: center;
 }
 
-.session-stats {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem 0.5rem;
-  margin: 0 0 0.85rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.6875rem, 0.65rem + 0.2vw, 0.8125rem);
-  color: var(--ink-muted);
-  line-height: 1.4;
-}
-
-.stat {
-  min-width: 0;
-}
-
-.stats-sep {
-  color: var(--line-strong);
-}
-
-.btn-setup,
+.btn-new-session,
 .btn-stop {
   font: inherit;
   cursor: pointer;
   min-height: 2.75rem;
-  padding: 0.55rem 1.15rem;
   border-radius: 4px;
   transition:
-    background 0.15s ease,
+    background 0.2s ease,
     opacity 0.15s ease,
-    border-color 0.15s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
     transform 0.15s ease;
 }
 
-.btn-setup {
-  flex: 1 1 10rem;
-  font-family: var(--font-sans);
+/* Same look as hero `cta-mojo` — dashed outline, pop on hover */
+.btn-new-session {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: min(100%, 22rem);
+  padding: 0.65rem 1.15rem;
+  font-family: var(--font-display);
   font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: var(--void);
-  background: var(--ink);
-  border: 1px solid rgb(255 255 255 / 0.12);
+  color: var(--ink);
+  background: var(--surface-faint);
+  border: 1px dashed rgb(224 112 86 / 0.55);
 }
 
-.btn-setup:hover:not(:disabled) {
-  background: #f2f5f1;
-  border-color: rgb(255 255 255 / 0.2);
+.btn-new-session:hover:not(:disabled) {
+  border-color: var(--pop);
+  color: var(--pop);
+  background: rgb(224 112 86 / 0.12);
 }
 
-.btn-setup:disabled {
+.btn-new-session:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.btn-setup:focus-visible,
+.btn-new-session:focus-visible,
 .btn-stop:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -648,19 +708,21 @@ function handleClose() {
 
 .btn-stop {
   flex: 1 1 10rem;
+  padding: 0.55rem 1.15rem;
   font-family: var(--font-mono);
   font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink);
-  background: rgb(255 255 255 / 0.04);
-  border: 1px solid var(--line-strong);
+  background: rgb(224 112 86 / 0.08);
+  border: 1px dashed rgb(224 112 86 / 0.45);
 }
 
 .btn-stop:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent);
+  background: rgb(224 112 86 / 0.16);
+  border-color: var(--pop);
+  color: var(--pop);
 }
 
 .btn-stop:disabled {
@@ -713,7 +775,7 @@ function handleClose() {
   width: min(92%, calc(100% - 0.75rem));
   aspect-ratio: 4 / 3;
   max-height: min(80%, 42vh);
-  border: 2px solid rgb(255 255 255 / 0.9);
+  border: 2px solid var(--frame-accent);
   border-radius: clamp(3px, 0.8vw, 6px);
   box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.55);
 }
@@ -722,7 +784,7 @@ function handleClose() {
   position: absolute;
   width: min(14%, 2rem);
   height: min(14%, 2rem);
-  border: 0 solid rgb(255 255 255 / 0.95);
+  border: 0 solid var(--frame-accent);
   pointer-events: none;
 }
 
@@ -758,26 +820,6 @@ function handleClose() {
   border-radius: 0 0 2px 0;
 }
 
-.frame-guide-caption {
-  position: absolute;
-  bottom: clamp(5%, 3vw, 11%);
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(95%, 18rem);
-  margin: 0;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: clamp(0.5rem, 2.2vw, 0.6875rem);
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  line-height: 1.35;
-  text-transform: uppercase;
-  color: rgb(255 255 255 / 0.94);
-  text-shadow:
-    0 0 8px rgb(0 0 0 / 0.9),
-    0 1px 2px rgb(0 0 0 / 0.8);
-}
-
 .timer-chip {
   position: absolute;
   top: clamp(0.45rem, 2vw, 0.8rem);
@@ -789,18 +831,19 @@ function handleClose() {
   padding: 0.38rem 0.6rem;
   font-family: var(--font-mono);
   font-size: clamp(0.75rem, 2.8vw, 0.9375rem);
-  font-weight: 600;
+  font-weight: var(--font-mono-weight);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.05em;
-  color: var(--void);
-  background: rgb(255 252 248 / 0.95);
-  border: 1px solid rgb(255 255 255 / 0.35);
+  color: var(--ink);
+  background: var(--chip-warm-bg);
+  border: 1px solid var(--chip-warm-border);
   border-radius: 4px;
   box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
 }
 
 .stat-timer {
   font-family: var(--font-mono);
+  font-weight: var(--font-mono-weight);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
@@ -821,60 +864,11 @@ function handleClose() {
   padding: 0.3rem 0.55rem;
   font-family: var(--font-mono);
   font-size: clamp(0.5625rem, 2vw, 0.625rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #f7f4ee;
   background: rgb(180 60 60 / 0.92);
-  border-radius: 2px;
-}
-
-.playback {
-  margin-top: clamp(1rem, 3vw, 1.35rem);
-  padding-top: clamp(1rem, 3vw, 1.35rem);
-  border-top: 1px solid var(--line);
-}
-
-.playback-label {
-  margin: 0 0 0.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.playback-audio {
-  display: block;
-  width: 100%;
-  max-width: min(28rem, 100%);
-  border-radius: 4px;
-  border: 1px solid var(--line);
-  background: var(--void);
-}
-
-.back-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 2.75rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-  text-decoration: none;
-}
-
-.back-link:hover {
-  color: var(--accent-hover);
-  text-decoration: underline;
-}
-
-.back-link:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
   border-radius: 2px;
 }
 
@@ -883,37 +877,11 @@ function handleClose() {
     flex-direction: column;
   }
 
-  .btn-setup,
-  .btn-stop {
+  .btn-new-session,
+  .btn-stop,
+  .btn-start {
     flex: 1 1 auto;
     width: 100%;
-  }
-
-  .session-stats {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
-  }
-
-  .stats-sep {
-    display: none;
-  }
-
-  .timer-chip {
-    top: clamp(0.35rem, 1.5vw, 0.55rem);
-    right: clamp(0.35rem, 1.5vw, 0.55rem);
-    min-height: 2rem;
-    padding: 0.3rem 0.5rem;
-  }
-
-  .recording-badge {
-    top: clamp(0.35rem, 1.5vw, 0.55rem);
-    left: clamp(0.35rem, 1.5vw, 0.55rem);
-    max-width: calc(100% - 5.5rem);
-  }
-
-  .frame-guide-target {
-    max-height: min(76%, 36vh);
   }
 }
 
@@ -922,15 +890,17 @@ function handleClose() {
     flex-wrap: nowrap;
   }
 
-  .btn-setup,
-  .btn-stop {
+  .btn-new-session,
+  .btn-stop,
+  .btn-start {
     flex: 0 1 auto;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .btn-setup:hover:not(:disabled),
-  .btn-stop:hover:not(:disabled) {
+  .btn-new-session:hover:not(:disabled),
+  .btn-stop:hover:not(:disabled),
+  .btn-start:hover:not(:disabled) {
     transform: none;
   }
 }
@@ -961,9 +931,9 @@ function handleClose() {
   padding: 0;
   font-size: 1.75rem;
   line-height: 1;
-  color: rgb(255 255 255 / 0.9);
+  color: var(--overlay-control-fg);
   background: rgb(0 0 0 / 0.5);
-  border: 1px solid rgb(255 255 255 / 0.15);
+  border: 1px solid var(--overlay-control-border);
   border-radius: 50%;
   cursor: pointer;
   backdrop-filter: blur(8px);
@@ -991,25 +961,6 @@ function handleClose() {
   color: var(--danger, #f87171);
   background: rgb(0 0 0 / 0.6);
   border-radius: 4px;
-}
-
-.camera-stats {
-  position: absolute;
-  top: clamp(0.75rem, 2vw, 1.25rem);
-  left: clamp(0.75rem, 2vw, 1.25rem);
-  z-index: 105;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem 0.5rem;
-  padding: 0.4rem 0.65rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.6875rem, 0.65rem + 0.2vw, 0.8125rem);
-  color: rgb(255 255 255 / 0.8);
-  background: rgb(0 0 0 / 0.5);
-  border-radius: 4px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .camera-preview {
@@ -1045,20 +996,22 @@ function handleClose() {
   border-radius: 4px;
   font-family: var(--font-mono);
   font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink);
-  background: rgb(255 255 255 / 0.04);
-  border: 1px solid var(--line-strong);
+  background: rgb(224 112 86 / 0.12);
+  border: 1px dashed rgb(224 112 86 / 0.5);
   transition:
     background 0.15s ease,
-    border-color 0.15s ease;
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 
 .camera-bottom .btn-stop:hover:not(:disabled) {
-  background: var(--accent-soft);
-  border-color: var(--accent);
+  background: rgb(224 112 86 / 0.22);
+  border-color: var(--pop, #e07056);
+  color: var(--pop, #e07056);
 }
 
 .camera-bottom .btn-stop:disabled {
@@ -1066,119 +1019,242 @@ function handleClose() {
   cursor: not-allowed;
 }
 
+.camera-bottom .btn-start {
+  flex: 0 0 auto;
+  min-width: 10rem;
+  font: inherit;
+  cursor: pointer;
+  min-height: 2.75rem;
+  padding: 0.55rem 1.15rem;
+  border-radius: 4px;
+  font-family: var(--font-display, "Syne", system-ui, sans-serif);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink, #e8ebe7);
+  background: var(--surface-faint);
+  border: 1px dashed rgb(224 112 86 / 0.55);
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.camera-bottom .btn-start:hover:not(:disabled) {
+  border-color: var(--pop, #e07056);
+  color: var(--pop, #e07056);
+  background: rgb(224 112 86 / 0.12);
+}
+
+.camera-bottom .btn-start:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.camera-bottom .btn-start:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .camera-overlay .frame-guide {
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: clamp(0.4rem, 2.5vw, 1rem);
   pointer-events: none;
 }
 
-.camera-overlay .frame-guide-target {
-  position: relative;
-  width: min(92%, calc(100% - 0.75rem));
-  aspect-ratio: 4 / 3;
-  max-height: min(80%, 42vh);
-  border: 2px solid rgb(255 255 255 / 0.9);
-  border-radius: clamp(3px, 0.8vw, 6px);
+.camera-overlay .frame-crop-box {
+  position: absolute;
+  box-sizing: border-box;
   box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.55);
+  border: 2px solid rgb(224 112 86 / 0.92);
+  border-radius: clamp(3px, 0.8vw, 6px);
+  pointer-events: auto;
+  touch-action: none;
+  transition: border-color 0.35s ease;
 }
 
-.camera-overlay .frame-corner {
+.camera-overlay .frame-crop-box.frame-crop-box--process-ok {
+  border-color: rgb(74 222 128 / 0.95);
+}
+
+.camera-overlay .frame-crop-box.frame-crop-box--process-err {
+  border-color: rgb(248 113 113 / 0.95);
+}
+
+/* Inner L-corners — same look as the original static frame */
+.camera-overlay .frame-corner-decor {
   position: absolute;
+  z-index: 0;
   width: min(14%, 2rem);
   height: min(14%, 2rem);
-  border: 0 solid rgb(255 255 255 / 0.95);
+  border: 0 solid rgb(224 112 86 / 0.95);
+  pointer-events: none;
+  transition: border-color 0.35s ease;
+}
+
+.camera-overlay .frame-crop-box.frame-crop-box--process-ok .frame-corner-decor {
+  border-color: rgb(74 222 128 / 0.95);
+}
+
+.camera-overlay .frame-crop-box.frame-crop-box--process-err .frame-corner-decor {
+  border-color: rgb(248 113 113 / 0.95);
+}
+
+.camera-overlay .frame-corner-decor--tl {
+  top: 5px;
+  left: 5px;
+  border-top-width: 3px;
+  border-left-width: 3px;
+  border-radius: 2px 0 0 0;
+}
+
+.camera-overlay .frame-corner-decor--tr {
+  top: 5px;
+  right: 5px;
+  border-top-width: 3px;
+  border-right-width: 3px;
+  border-radius: 0 2px 0 0;
+}
+
+.camera-overlay .frame-corner-decor--bl {
+  bottom: 5px;
+  left: 5px;
+  border-bottom-width: 3px;
+  border-left-width: 3px;
+  border-radius: 0 0 0 2px;
+}
+
+.camera-overlay .frame-corner-decor--br {
+  bottom: 5px;
+  right: 5px;
+  border-bottom-width: 3px;
+  border-right-width: 3px;
+  border-radius: 0 0 2px 0;
+}
+
+.camera-overlay .frame-move {
+  position: absolute;
+  inset: 18px;
+  z-index: 1;
+  cursor: move;
+  border-radius: 2px;
+}
+
+/* Invisible hit targets — resize behavior unchanged */
+.camera-overlay .frame-handle {
+  position: absolute;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  cursor: inherit;
+  touch-action: none;
+}
+
+.camera-overlay .frame-handle--nw {
+  top: -10px;
+  left: -10px;
+  cursor: nwse-resize;
+}
+.camera-overlay .frame-handle--n {
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+.camera-overlay .frame-handle--ne {
+  top: -10px;
+  right: -10px;
+  cursor: nesw-resize;
+}
+.camera-overlay .frame-handle--e {
+  top: 50%;
+  right: -10px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+.camera-overlay .frame-handle--se {
+  bottom: -10px;
+  right: -10px;
+  cursor: nwse-resize;
+}
+.camera-overlay .frame-handle--s {
+  bottom: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+.camera-overlay .frame-handle--sw {
+  bottom: -10px;
+  left: -10px;
+  cursor: nesw-resize;
+}
+.camera-overlay .frame-handle--w {
+  top: 50%;
+  left: -10px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.camera-overlay .live-timer-cluster {
+  position: absolute;
+  top: clamp(0.45rem, 2vw, 0.85rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  max-width: calc(100% - 2rem);
   pointer-events: none;
 }
 
-.camera-overlay .frame-corner--tl { top: 5px; left: 5px; border-top-width: 3px; border-left-width: 3px; border-radius: 2px 0 0 0; }
-.camera-overlay .frame-corner--tr { top: 5px; right: 5px; border-top-width: 3px; border-right-width: 3px; border-radius: 0 2px 0 0; }
-.camera-overlay .frame-corner--bl { bottom: 5px; left: 5px; border-bottom-width: 3px; border-left-width: 3px; border-radius: 0 0 0 2px; }
-.camera-overlay .frame-corner--br { bottom: 5px; right: 5px; border-bottom-width: 3px; border-right-width: 3px; border-radius: 0 0 2px 0; }
-
-.camera-overlay .frame-guide-caption {
-  position: absolute;
-  bottom: clamp(5%, 3vw, 11%);
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(95%, 18rem);
+.camera-overlay .live-timer-cluster .recording-badge {
+  position: static;
   margin: 0;
-  text-align: center;
+  padding: 0.3rem 0.55rem;
   font-family: var(--font-mono);
-  font-size: clamp(0.5rem, 2.2vw, 0.6875rem);
-  font-weight: 500;
-  letter-spacing: 0.1em;
-  line-height: 1.35;
+  font-size: clamp(0.5625rem, 2vw, 0.625rem);
+  font-weight: var(--font-mono-weight);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgb(255 255 255 / 0.94);
-  text-shadow: 0 0 8px rgb(0 0 0 / 0.9), 0 1px 2px rgb(0 0 0 / 0.8);
+  color: var(--overlay-control-fg);
+  background: rgb(224 112 86 / 0.35);
+  border: 1px solid rgb(224 112 86 / 0.55);
+  border-radius: 2px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.65);
 }
 
-.camera-overlay .timer-chip {
-  position: absolute;
-  top: clamp(0.45rem, 2vw, 0.8rem);
-  right: clamp(0.45rem, 2vw, 0.8rem);
-  z-index: 2;
+.camera-overlay .live-timer-cluster .timer-chip {
+  position: static;
   min-height: 2.25rem;
   display: inline-flex;
   align-items: center;
   padding: 0.38rem 0.6rem;
   font-family: var(--font-mono);
   font-size: clamp(0.75rem, 2.8vw, 0.9375rem);
-  font-weight: 600;
+  font-weight: var(--font-mono-weight);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.05em;
-  color: var(--void);
-  background: rgb(255 252 248 / 0.95);
-  border: 1px solid rgb(255 255 255 / 0.35);
+  color: var(--overlay-control-fg);
+  background: rgb(224 112 86 / 0.22);
+  border: 1px solid rgb(224 112 86 / 0.45);
   border-radius: 4px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
-}
-
-.camera-overlay .recording-badge {
-  position: absolute;
-  top: clamp(0.5rem, 2vw, 0.75rem);
-  left: clamp(0.5rem, 2vw, 0.75rem);
-  z-index: 2;
-  margin: 0;
-  padding: 0.3rem 0.55rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.5625rem, 2vw, 0.625rem);
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #f7f4ee;
-  background: rgb(180 60 60 / 0.92);
-  border-radius: 2px;
-}
-
-.tts-toggle {
-  position: absolute;
-  bottom: clamp(4.5rem, 12vh, 6rem);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 106;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.35rem 0.6rem;
-  font-family: var(--font-mono);
-  font-size: clamp(0.625rem, 2vw, 0.6875rem);
-  color: rgb(255 255 255 / 0.88);
-  background: rgb(0 0 0 / 0.45);
-  border: 1px solid rgb(255 255 255 / 0.12);
-  border-radius: 4px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.tts-toggle input {
-  accent-color: var(--accent, #8fbc8f);
+  box-shadow: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.65);
 }
 
 .camera-capture-error {

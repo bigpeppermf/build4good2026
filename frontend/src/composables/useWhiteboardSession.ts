@@ -2,14 +2,23 @@ import { computed, nextTick, onUnmounted, ref, shallowRef } from "vue";
 
 import { apiUrl } from "../utils/apiUrl";
 
-/** Full audio stream: MediaRecorder timeslice (encode chunks to backend). */
-const AUDIO_SLICE_MS = 500;
-
 /** Still frames from the webcam (not video stream). */
 const IMAGE_INTERVAL_MS = 15_000;
 
 const JPEG_QUALITY = 0.82;
 const EXPORT_MAX_WIDTH = 1280;
+
+/** Normalized crop rect over the video (0–1), from the adjustable frame UI. */
+export interface FrameCropNorm {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+function defaultFrameCrop(): FrameCropNorm {
+  return { left: 0.06, top: 0.08, width: 0.88, height: 0.72 };
+}
 
 export interface VerbalResponseItem {
   timestampMs: number;
@@ -17,30 +26,70 @@ export interface VerbalResponseItem {
   visualDelta?: string;
 }
 
-function pickAudioMime(): string | undefined {
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
-  ];
-  for (const t of candidates) {
-    if (MediaRecorder.isTypeSupported(t)) {
-      return t;
-    }
-  }
-  return undefined;
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
 }
 
-function captureJpegFromVideo(video: HTMLVideoElement): Promise<Blob | null> {
+/**
+ * Map normalized crop (0–1 relative to the video *element* box, same as the overlay)
+ * into source pixel rect on the video bitmap. Accounts for CSS `object-fit: cover`,
+ * which scales and centers the stream so the element is filled — naive left*videoWidth
+ * would not match what you see on screen.
+ */
+function coverCropToVideoPixels(
+  video: HTMLVideoElement,
+  crop: FrameCropNorm,
+): { sx: number; sy: number; sw: number; sh: number } | null {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (vw <= 0 || vh <= 0) {
-    return Promise.resolve(null);
+    return null;
   }
 
-  const scale = Math.min(1, EXPORT_MAX_WIDTH / vw);
-  const cw = Math.round(vw * scale);
-  const ch = Math.round(vh * scale);
+  const rect = video.getBoundingClientRect();
+  const elW = rect.width;
+  const elH = rect.height;
+  if (elW <= 0 || elH <= 0) {
+    return null;
+  }
+
+  const scale = Math.max(elW / vw, elH / vh);
+  const wVis = elW / scale;
+  const hVis = elH / scale;
+  const x0 = (vw - wVis) / 2;
+  const y0 = (vh - hVis) / 2;
+
+  let sx = x0 + crop.left * wVis;
+  let sy = y0 + crop.top * hVis;
+  let sw = crop.width * wVis;
+  let sh = crop.height * hVis;
+
+  sx = Math.round(sx);
+  sy = Math.round(sy);
+  sw = Math.round(sw);
+  sh = Math.round(sh);
+
+  sx = clamp(sx, 0, vw - 1);
+  sy = clamp(sy, 0, vh - 1);
+  sw = clamp(sw, 1, vw - sx);
+  sh = clamp(sh, 1, vh - sy);
+
+  return { sx, sy, sw, sh };
+}
+
+function captureJpegFromVideo(
+  video: HTMLVideoElement,
+  crop: FrameCropNorm,
+): Promise<Blob | null> {
+  const src = coverCropToVideoPixels(video, crop);
+  if (!src) {
+    return Promise.resolve(null);
+  }
+  const { sx, sy, sw, sh } = src;
+
+  const scale = Math.min(1, EXPORT_MAX_WIDTH / sw);
+  const cw = Math.round(sw * scale);
+  const ch = Math.round(sh * scale);
 
   const canvas = document.createElement("canvas");
   canvas.width = cw;
@@ -49,7 +98,7 @@ function captureJpegFromVideo(video: HTMLVideoElement): Promise<Blob | null> {
   if (!ctx) {
     return Promise.resolve(null);
   }
-  ctx.drawImage(video, 0, 0, cw, ch);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
 
   return new Promise((resolve) => {
     canvas.toBlob(
@@ -60,24 +109,12 @@ function captureJpegFromVideo(video: HTMLVideoElement): Promise<Blob | null> {
   });
 }
 
-function speakVerbal(text: string, enabled: boolean) {
-  if (!enabled || !text.trim()) {
-    return;
-  }
-  if (typeof window === "undefined" || !window.speechSynthesis) {
-    return;
-  }
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = "en-US";
-  window.speechSynthesis.speak(u);
-}
-
 export function useWhiteboardSession() {
   const videoRef = ref<HTMLVideoElement | null>(null);
 
   const activeStream = shallowRef<MediaStream | null>(null);
   const isSettingUp = ref(false);
+  const isBeginningSession = ref(false);
   const isSessionActive = ref(false);
   const errorMessage = ref<string | null>(null);
 
@@ -85,15 +122,17 @@ export function useWhiteboardSession() {
   const uploadOk = ref<boolean | null>(null);
   const uploadState = ref<"idle" | "uploading" | "done">("idle");
 
-  const sessionPlaybackUrl = ref<string | null>(null);
+  /** Normalized region used for JPEG capture (shared with setup UI). */
+  const frameCropNorm = ref<FrameCropNorm>(defaultFrameCrop());
 
-  /** Backend graph session (POST /new-session). */
+  /** Backend graph session (POST /new-session) — set when user taps Start session. */
   const sessionId = ref<string | null>(null);
   const verbalResponses = ref<VerbalResponseItem[]>([]);
-  const ttsEnabled = ref(true);
   const lastCaptureError = ref<string | null>(null);
 
-  const audioChunksRecordedCount = ref(0);
+  /** Set from each still-image interval once the backend responds (UI border feedback). */
+  const lastCaptureProcessStatus = ref<"idle" | "success" | "error">("idle");
+
   const imageFramesSentCount = ref(0);
 
   const sessionElapsedMs = ref(0);
@@ -105,9 +144,6 @@ export function useWhiteboardSession() {
     const s = totalSec % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   });
-
-  let mediaRecorder: MediaRecorder | null = null;
-  const audioChunksLocal: Blob[] = [];
 
   let imageSeq = 0;
 
@@ -136,13 +172,6 @@ export function useWhiteboardSession() {
     }, 250);
   }
 
-  function revokeSessionPlaybackUrl() {
-    if (sessionPlaybackUrl.value) {
-      URL.revokeObjectURL(sessionPlaybackUrl.value);
-      sessionPlaybackUrl.value = null;
-    }
-  }
-
   function stopTimersAndIntervals() {
     clearSessionTimer();
     clearImageInterval();
@@ -169,8 +198,11 @@ export function useWhiteboardSession() {
     if (!video || !isSessionActive.value || !sessionId.value) {
       return;
     }
-    const blob = await captureJpegFromVideo(video);
+    const blob = await captureJpegFromVideo(video, frameCropNorm.value);
     if (!blob || blob.size === 0) {
+      lastCaptureError.value =
+        "Could not read pixels for this frame (camera may still be starting).";
+      lastCaptureProcessStatus.value = "error";
       return;
     }
     imageSeq += 1;
@@ -193,12 +225,14 @@ export function useWhiteboardSession() {
         const err =
           typeof data.error === "string" ? data.error : `Capture failed (${res.status})`;
         lastCaptureError.value = err;
+        lastCaptureProcessStatus.value = "error";
         return;
       }
 
       imageFramesSentCount.value += 1;
 
       if (data.discarded === true) {
+        lastCaptureProcessStatus.value = "success";
         return;
       }
 
@@ -216,26 +250,74 @@ export function useWhiteboardSession() {
             visualDelta: vd,
           },
         ];
-        speakVerbal(verbal, ttsEnabled.value);
       }
+
+      lastCaptureProcessStatus.value = "success";
     } catch {
       lastCaptureError.value = "Network error while uploading frame.";
+      lastCaptureProcessStatus.value = "error";
     }
   }
 
-  async function startSession() {
+  async function finalizeSession() {
+    const sid = sessionId.value;
+    isSessionActive.value = false;
+    isBeginningSession.value = false;
+    stopTimersAndIntervals();
+    lastCaptureProcessStatus.value = "idle";
+
+    if (!sid) {
+      teardownStream();
+      return;
+    }
+
+    uploadState.value = "uploading";
+    try {
+      const res = await fetch(apiUrl("/end-session"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sid }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      if (res.ok) {
+        uploadOk.value = true;
+        uploadMessage.value =
+          typeof data.status === "string"
+            ? `Session ended and saved (${data.status}).`
+            : "Session ended and saved.";
+      } else {
+        uploadOk.value = false;
+        uploadMessage.value =
+          typeof data.error === "string"
+            ? data.error
+            : "Could not save session on the server.";
+      }
+    } catch {
+      uploadOk.value = false;
+      uploadMessage.value =
+        "Could not reach the server to end the session.";
+    }
+    sessionId.value = null;
+    uploadState.value = "done";
+    teardownStream();
+  }
+
+  /** Camera preview only — no backend session yet. */
+  async function openCameraSetup() {
     errorMessage.value = null;
     uploadMessage.value = null;
     uploadOk.value = null;
     uploadState.value = "idle";
     lastCaptureError.value = null;
+    lastCaptureProcessStatus.value = "idle";
     verbalResponses.value = [];
-    revokeSessionPlaybackUrl();
-    audioChunksLocal.length = 0;
     imageSeq = 0;
-    audioChunksRecordedCount.value = 0;
     imageFramesSentCount.value = 0;
     sessionId.value = null;
+    frameCropNorm.value = defaultFrameCrop();
     stopTimersAndIntervals();
     sessionElapsedMs.value = 0;
 
@@ -245,7 +327,7 @@ export function useWhiteboardSession() {
       return;
     }
 
-    if (isSessionActive.value || isSettingUp.value) {
+    if (activeStream.value || isSettingUp.value) {
       return;
     }
 
@@ -254,19 +336,8 @@ export function useWhiteboardSession() {
     let stream: MediaStream | null = null;
 
     try {
-      const nsRes = await fetch(apiUrl("/new-session"), { method: "POST" });
-      if (!nsRes.ok) {
-        throw new Error("Could not create a backend session (is the API running on port 8000?)");
-      }
-      const nsJson = (await nsRes.json()) as { session_id?: string };
-      if (!nsJson.session_id) {
-        throw new Error("Invalid response from new-session.");
-      }
-      sessionId.value = nsJson.session_id;
-
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
           video: {
             facingMode: { ideal: "environment" },
             width: { ideal: 1280 },
@@ -275,7 +346,6 @@ export function useWhiteboardSession() {
         });
       } catch {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
           video: true,
         });
       }
@@ -287,164 +357,96 @@ export function useWhiteboardSession() {
         el.srcObject = stream;
         await el.play().catch(() => undefined);
       }
-
-      const audioOnly = new MediaStream(stream.getAudioTracks());
-      const mime = pickAudioMime();
-      const rec = mime
-        ? new MediaRecorder(audioOnly, { mimeType: mime })
-        : new MediaRecorder(audioOnly);
-
-      rec.ondataavailable = (e) => {
-        if (e.data.size === 0) {
-          return;
-        }
-        audioChunksLocal.push(e.data);
-        audioChunksRecordedCount.value += 1;
-      };
-
-      rec.onstop = () => {
-        void (async () => {
-          const sid = sessionId.value;
-          isSessionActive.value = false;
-          uploadState.value = "uploading";
-          stopTimersAndIntervals();
-
-          const blob = new Blob(audioChunksLocal, {
-            type: rec.mimeType || "audio/webm",
-          });
-          audioChunksLocal.length = 0;
-          revokeSessionPlaybackUrl();
-          if (blob.size > 0) {
-            sessionPlaybackUrl.value = URL.createObjectURL(blob);
-          }
-
-          if (sid) {
-            try {
-              const res = await fetch(apiUrl("/end-session"), {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ session_id: sid }),
-              });
-              const data = (await res.json().catch(() => ({}))) as Record<
-                string,
-                unknown
-              >;
-              if (res.ok) {
-                uploadOk.value = true;
-                uploadMessage.value =
-                  typeof data.status === "string"
-                    ? `Session ended and saved (${data.status}).`
-                    : "Session ended and saved.";
-              } else {
-                uploadOk.value = false;
-                uploadMessage.value =
-                  typeof data.error === "string"
-                    ? data.error
-                    : "Could not save session on the server.";
-              }
-            } catch {
-              uploadOk.value = false;
-              uploadMessage.value =
-                "Could not reach the server to end the session.";
-            }
-            sessionId.value = null;
-          } else {
-            uploadOk.value = true;
-            uploadMessage.value = "Session ended.";
-          }
-
-          uploadState.value = "done";
-          teardownStream();
-          mediaRecorder = null;
-        })();
-      };
-
-      mediaRecorder = rec;
-
-      try {
-        rec.start(AUDIO_SLICE_MS);
-      } catch (err) {
-        throw err instanceof Error
-          ? err
-          : new Error("Could not start audio recorder.");
-      }
-      isSessionActive.value = true;
-      startSessionTimer();
-      startImageInterval();
     } catch (e) {
       sessionId.value = null;
       clearImageInterval();
-      if (mediaRecorder) {
-        try {
-          if (mediaRecorder.state !== "inactive") {
-            mediaRecorder.stop();
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-      mediaRecorder = null;
       teardownStream();
       isSessionActive.value = false;
       errorMessage.value =
         e instanceof Error
           ? e.message
-          : "Could not start camera or recorder.";
+          : "Could not start camera.";
     } finally {
       isSettingUp.value = false;
     }
   }
 
-  function stopSession() {
-    clearSessionTimer();
-    clearImageInterval();
-    const rec = mediaRecorder;
-    if (rec && rec.state !== "inactive") {
-      try {
-        rec.requestData?.();
-      } catch {
-        /* ignore */
+  /** POST /new-session, timer, and capture interval — call after framing the shot. */
+  async function beginSession() {
+    if (!activeStream.value || isSessionActive.value || isBeginningSession.value) {
+      return;
+    }
+
+    errorMessage.value = null;
+    lastCaptureError.value = null;
+    lastCaptureProcessStatus.value = "idle";
+    verbalResponses.value = [];
+    imageSeq = 0;
+    imageFramesSentCount.value = 0;
+    sessionElapsedMs.value = 0;
+    stopTimersAndIntervals();
+
+    isBeginningSession.value = true;
+
+    try {
+      const nsRes = await fetch(apiUrl("/new-session"), { method: "POST" });
+      if (!nsRes.ok) {
+        throw new Error(
+          "Could not create a backend session (is the API running on port 8000?)",
+        );
       }
-      rec.stop();
-    } else {
-      teardownStream();
+      const nsJson = (await nsRes.json()) as { session_id?: string };
+      if (!nsJson.session_id) {
+        throw new Error("Invalid response from new-session.");
+      }
+      sessionId.value = nsJson.session_id;
+      isSessionActive.value = true;
+      startSessionTimer();
+      startImageInterval();
+    } catch (e) {
+      sessionId.value = null;
       isSessionActive.value = false;
+      errorMessage.value =
+        e instanceof Error
+          ? e.message
+          : "Could not start session.";
+    } finally {
+      isBeginningSession.value = false;
     }
   }
 
+  function stopSession() {
+    void finalizeSession();
+  }
+
   onUnmounted(() => {
-    stopTimersAndIntervals();
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-      mediaRecorder.onstop = null;
-      mediaRecorder.stop();
+    if (sessionId.value || isSessionActive.value) {
+      void finalizeSession();
+    } else {
+      teardownStream();
     }
-    mediaRecorder = null;
-    teardownStream();
-    isSessionActive.value = false;
-    revokeSessionPlaybackUrl();
-    audioChunksLocal.length = 0;
-    sessionId.value = null;
   });
 
   return {
     videoRef,
     activeStream,
     isSettingUp,
+    isBeginningSession,
     isSessionActive,
     errorMessage,
     uploadMessage,
     uploadOk,
     uploadState,
-    sessionPlaybackUrl,
+    frameCropNorm,
     sessionId,
     verbalResponses,
-    ttsEnabled,
     lastCaptureError,
-    audioChunksRecordedCount,
+    lastCaptureProcessStatus,
     imageFramesSentCount,
     sessionElapsedMs,
     sessionTimeLabel,
-    startSession,
+    openCameraSetup,
+    beginSession,
     stopSession,
   };
 }

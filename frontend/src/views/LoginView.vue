@@ -70,7 +70,7 @@
   border-radius: 4px;
   background: var(--bg-elevated);
   box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.06) inset,
+    0 1px 0 var(--edge-inset) inset,
     0 32px 64px -36px rgb(0 0 0 / 0.65);
   text-align: center;
 }
@@ -79,7 +79,7 @@
   margin: 0 0 clamp(0.75rem, 2vw, 1rem);
   font-family: var(--font-mono);
   font-size: clamp(0.5625rem, 0.55rem + 0.2vw, 0.6875rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-muted);
@@ -118,7 +118,7 @@
 .field-label {
   font-family: var(--font-mono);
   font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ink-muted);
@@ -130,7 +130,7 @@
   font-family: var(--font-sans);
   font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
   color: var(--ink);
-  background: rgb(255 255 255 / 0.04);
+  background: var(--surface-faint);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   outline: none;
@@ -156,7 +156,7 @@
   text-transform: uppercase;
   color: var(--void);
   background: var(--ink);
-  border: 1px solid rgb(255 255 255 / 0.12);
+  border: 1px solid var(--btn-ink-border);
   border-radius: 4px;
   cursor: pointer;
   transition:
@@ -165,8 +165,8 @@
 }
 
 .btn-login:hover:not(:disabled) {
-  background: #f2f5f1;
-  border-color: rgb(255 255 255 / 0.2);
+  background: var(--btn-ink-bg-hover);
+  border-color: var(--btn-ink-border-hover);
 }
 
 .btn-login:disabled {
@@ -183,6 +183,7 @@
   margin: 0;
   font-family: var(--font-mono);
   font-size: clamp(0.5625rem, 0.55rem + 0.1vw, 0.625rem);
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.08em;
   color: var(--ink-faint);
   text-align: center;

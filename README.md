@@ -1,4 +1,4 @@
-# build4good2026
+# Mirage
 
 Extra docs and README-style notes: [`readmes/`](readmes/README.md).
 

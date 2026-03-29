@@ -1,12 +1,12 @@
 # Frontend
 
-Whiteboard **interview practice** tool — frontend notes. (No product name yet; see root README **Contexts**.)
+**Mirage** — whiteboard interview practice (frontend notes).
 
 **Stack:** Vite + Vue 3 + TypeScript
 
 ## Current phase
 
-Dashboard: camera aimed at a physical whiteboard; **full audio** is sent via `MediaRecorder` WebSocket chunks, and **JPEG stills** are captured from the preview every **15s** (`src/composables/useWhiteboardSession.ts`). See [STREAMING.md](STREAMING.md) for the wire protocol.
+Dashboard: **`POST /new-session`** (via `apiUrl` + Vite `/api` proxy) stores **`session_id`**; **JPEG** stills every **15s** go to **`POST /agent/process-capture`**; **`POST /end-session`** runs on stop. **`verbal_response`** text is listed in the dashboard and optionally spoken (TTS). **Audio** uses WebSocket `/api/practice/stream`. See [STREAMING.md](STREAMING.md).
 
 ## Layout decisions
 
@@ -45,8 +45,8 @@ Dashboard: camera aimed at a physical whiteboard; **full audio** is sent via `Me
 - "Open chat" button in the Previous sessions section navigates here
 
 ### Typography
-- `--font-mono` changed from IBM Plex Mono to **Gelasio** (serif) — used across nav links, stats, badges, code snippets, buttons, etc.
-- Other fonts unchanged: Syne (display), Source Sans 3 (sans), Cormorant Garamond (serif)
+- **Jura** for `--font-mono` and `--font-serif` (nav, labels, stats, hero accent line, etc.)
+- **Syne** (display headings), **Source Sans 3** (body / UI sans)
 
 ## Open design questions
 

@@ -2,10 +2,11 @@
 HTTP server for the real-time system design graph backend.
 
 Endpoints:
-  GET  /docs                 — API reference rendered as HTML
-  POST /new-session          — create an isolated graph + agent for a user
-  POST /agent/process-frame  — send a visual delta to the Gemini agent
-  POST /end-session          — save the completed graph to MongoDB
+  GET  /docs                    — API reference rendered as HTML
+  POST /new-session             — create an isolated graph + agent + CV pipeline for a user
+  POST /agent/process-frame   — send a visual_delta (JSON) to the Gemini agent
+  POST /agent/process-capture — multipart JPEG + session_id; runs visual_delta pipeline then agent
+  POST /end-session           — save the completed graph to MongoDB
 
 Run:
     uv run main.py
@@ -18,6 +19,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from starlette.applications import Starlette
+from starlette.datastructures import UploadFile
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
@@ -128,6 +130,10 @@ async def new_session(_request: Request) -> JSONResponse:
     POST /new-session
     Creates a fresh graph and agent for a new user session.
     Returns a session_id that must be included in all subsequent requests.
+
+    The ``VisualDeltaPipeline`` (YOLO/OCR) is created lazily on the first
+    ``POST /agent/process-capture`` so importing this module does not load
+    heavyweight CV dependencies.
     """
     session_id = str(uuid.uuid4())
     graph = SystemDesignGraph()
@@ -199,21 +205,89 @@ async def end_session(request: Request) -> JSONResponse:
     return JSONResponse({"status": "saved", **summary})
 
 
+async def process_capture(request: Request) -> JSONResponse:
+    """
+    POST /agent/process-capture
+    Multipart body for the browser / CV path: JPEG frame + session_id + timestamp.
+    Runs the per-session visual_delta pipeline, then the Gemini agent when a delta
+    is produced (same as POST /agent/process-frame with plain-text visual_delta).
+    """
+    try:
+        form = await request.form()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "Could not parse form body."}, status_code=400)
+
+    raw_sid = form.get("session_id")
+    session_id = raw_sid if isinstance(raw_sid, str) else ""
+    if not session_id or session_id not in _sessions:
+        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    raw_ts = form.get("timestamp_ms", "0")
+    timestamp_ms = int(raw_ts) if isinstance(raw_ts, str) else 0
+
+    frame_upload = form.get("frame")
+    if not isinstance(frame_upload, UploadFile):
+        return JSONResponse({"error": "Missing or invalid 'frame' field."}, status_code=400)
+
+    frame_bytes: bytes = await frame_upload.read()
+    if not frame_bytes:
+        return JSONResponse({"error": "Empty frame."}, status_code=400)
+
+    sess = _sessions[session_id]
+    if "pipeline" not in sess:
+        from core.visual_delta_pipeline import VisualDeltaPipeline
+
+        sess["pipeline"] = VisualDeltaPipeline()
+    pipeline = sess["pipeline"]
+    agent = sess["agent"]
+
+    try:
+        pipeline_result = pipeline.process_frame(frame_bytes, timestamp_ms)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    if pipeline_result is None:
+        return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
+
+    try:
+        verbal_response = agent.process_frame(
+            pipeline_result["visual_delta"],
+            timestamp_ms,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(
+        {
+            "verbal_response": verbal_response,
+            "visual_delta": pipeline_result["visual_delta"],
+            "labels": pipeline_result["labels"],
+            "annotations": pipeline_result["annotations"],
+            "connections": pipeline_result["connections"],
+            "timestamp_ms": timestamp_ms,
+        }
+    )
+
+
 # ------------------------------------------------------------------ #
 # App assembly                                                         #
 # ------------------------------------------------------------------ #
 
-app = Starlette(routes=[
-    Route("/docs", serve_docs, methods=["GET"]),
-    Route("/new-session", new_session, methods=["POST"]),
-    Route("/agent/process-frame", process_frame, methods=["POST"]),
-    Route("/end-session", end_session, methods=["POST"]),
-])
+app = Starlette(
+    routes=[
+        Route("/docs", serve_docs, methods=["GET"]),
+        Route("/new-session", new_session, methods=["POST"]),
+        Route("/agent/process-frame", process_frame, methods=["POST"]),
+        Route("/agent/process-capture", process_capture, methods=["POST"]),
+        Route("/end-session", end_session, methods=["POST"]),
+    ],
+)
 
 
 def serve() -> None:
-    print("Docs         : GET  http://localhost:8000/docs")
-    print("New session  : POST http://localhost:8000/new-session")
-    print("Process frame: POST http://localhost:8000/agent/process-frame")
-    print("End session  : POST http://localhost:8000/end-session")
+    print("Docs            : GET  http://localhost:8000/docs")
+    print("New session     : POST http://localhost:8000/new-session")
+    print("Process frame   : POST http://localhost:8000/agent/process-frame")
+    print("Process capture : POST http://localhost:8000/agent/process-capture")
+    print("End session     : POST http://localhost:8000/end-session")
     uvicorn.run(app, host="0.0.0.0", port=8000)

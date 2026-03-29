@@ -234,7 +234,7 @@ async def process_frame(request: Request) -> JSONResponse:
         if pipeline_result is None:
             return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
 
-        verbal_response = _agent.process_visual_delta(pipeline_result["visual_delta"], timestamp_ms)
+        verbal_response = _agent.process_frame(pipeline_result["visual_delta"], timestamp_ms)
         return JSONResponse(
             {
                 "verbal_response": verbal_response,

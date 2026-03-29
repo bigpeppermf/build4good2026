@@ -377,6 +377,41 @@ Called by the CV pipeline after each whiteboard frame is analysed. Passes the `v
 
 ---
 
+### `POST /agent/process-capture`
+
+Used by the **browser** (or any client that has raw JPEG bytes). Runs the per-session **visual delta pipeline** (frame filter → OCR → `visual_delta` text), then passes that text to the same agent as `POST /agent/process-frame`. The CV stack is **lazy-loaded** on first use so `POST /new-session` stays lightweight.
+
+**Request:** `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | `string` | Yes | ID returned by `POST /new-session`. |
+| `timestamp_ms` | `string` | No | Milliseconds since session start (form field; default `0`). |
+| `frame` | file | Yes | JPEG image bytes. |
+
+**Response (200)** — frame accepted and a delta was produced
+```json
+{
+  "verbal_response": "Got it — I've added the API box.",
+  "visual_delta": "A box labeled 'API' was drawn.",
+  "labels": ["API"],
+  "annotations": [],
+  "connections": [],
+  "timestamp_ms": 15000
+}
+```
+
+**Response (200)** — frame discarded by the pipeline (no change to describe)
+```json
+{ "discarded": true, "timestamp_ms": 15000 }
+```
+
+**Response (400)** — missing/empty `frame`, or unparseable form.
+
+**Response (404)** — unknown `session_id`.
+
+---
+
 ### `POST /end-session`
 
 Saves the session graph to MongoDB, removes it from the session registry, and returns a summary.

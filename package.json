@@ -1,4 +1,5 @@
 {
+  "name": "mirage",
   "private": true,
   "workspaces": [
     "frontend",

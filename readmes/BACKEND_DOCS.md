@@ -1,4 +1,4 @@
-**Media ingest (current frontend):** full **audio** as WebM `MediaRecorder` chunks (audio-only track) plus **JPEG still frames** from the camera every **15 seconds** over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). The backend frame-filtering module can apply to those JPEG payloads as they arrive. On the backend side, the image-analysis path now assumes a staged visual pipeline: accepted frames → OCR snapshot → `visual_delta` text → graph agent.
+**Media ingest (current frontend):** `POST /new-session` stores a `session_id`; the UI streams **audio** over **WebSocket** `/practice/stream` and posts **JPEG** captures to **`POST /agent/process-capture`** with that `session_id` (per-session `VisualDeltaPipeline`, lazy-loaded). Plain-text deltas can also go to `POST /agent/process-frame`. `POST /end-session` persists the graph. Spec: [STREAMING.md](STREAMING.md), API: `backend/docs/api-reference.md`.
 
 ---
 

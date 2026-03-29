@@ -5,7 +5,7 @@ import { RouterLink } from "vue-router";
 <template>
   <section
     class="hero"
-    aria-labelledby="hero-title"
+    aria-labelledby="hero-brand"
   >
     <div
       class="hero-watermark"
@@ -23,16 +23,15 @@ import { RouterLink } from "vue-router";
       <div class="wm-row wm-scroll-right"><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span><span class="wm-track">Practice Practice Practice Practice Practice Practice Practice Practice Practice Practice&nbsp;</span></div>
     </div>
 
-    <div class="hero-frame">
-      <p class="hero-meta">
-        <span class="meta-label">Whiteboard interview practice</span>
-        <span
-          class="meta-sep"
-          aria-hidden="true"
-        >·</span>
-        <span class="meta-ref">Ref. UI-001</span>
-      </p>
+    <div class="hero-content">
+      <h2
+        id="hero-brand"
+        class="hero-brand"
+      >
+        Mirage
+      </h2>
 
+      <div class="hero-frame">
       <h1
         id="hero-title"
         class="hero-title"
@@ -66,6 +65,7 @@ import { RouterLink } from "vue-router";
       >
         Begin capture
       </RouterLink>
+      </div>
     </div>
 
   </section>
@@ -74,16 +74,19 @@ import { RouterLink } from "vue-router";
 <style scoped>
 .hero {
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: visible;
   width: 100%;
   max-width: 100%;
-  height: 100vh;
-  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: clamp(2rem, 6vw, 4rem) 0;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  /* ~half the upper “air” vs centered: start lower on the screen */
+  padding: clamp(5rem, 22vh, 16rem) clamp(1rem, 3vw, 2rem) clamp(2.5rem, 7vw, 5rem);
 }
 
 .hero-watermark {
@@ -134,36 +137,72 @@ import { RouterLink } from "vue-router";
   100% { transform: translateX(0); }
 }
 
+.hero-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  max-width: min(40rem, 100%);
+  box-sizing: border-box;
+}
+
+.hero-brand {
+  width: 100%;
+  margin: 0 0 clamp(1rem, 3vw, 1.5rem);
+  padding: 0.06em 0 0.2em;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: clamp(3rem, 17vw, 7.5rem);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+  text-align: center;
+  transform: translateY(-0.35rem);
+  overflow: visible;
+  /* Orange-only shimmer on the letters (same hue family as --pop) */
+  background: linear-gradient(
+    100deg,
+    var(--pop) 0%,
+    #ff8f78 22%,
+    #ffd8ce 45%,
+    var(--hero-shimmer-mid) 50%,
+    #ffd8ce 55%,
+    #ff8f78 78%,
+    var(--pop) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: hero-brand-shine 3.5s ease-in-out infinite;
+}
+
+@keyframes hero-brand-shine {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
 .hero-frame {
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: min(40rem, 100%);
   text-align: center;
   padding: clamp(1.35rem, 4.5vw, 2.6rem) clamp(1rem, 3.5vw, 1.75rem);
   border: 1px solid var(--rose-line);
   border-radius: 4px;
   background: var(--bg-elevated);
   box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.06) inset,
+    0 1px 0 var(--edge-inset) inset,
     0 32px 64px -36px rgb(0 0 0 / 0.65);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-}
-
-.hero-meta {
-  margin: 0 0 clamp(1rem, 3vw, 1.5rem);
-  font-family: var(--font-mono);
-  font-size: clamp(0.5625rem, 0.55rem + 0.2vw, 0.6875rem);
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.meta-sep {
-  margin: 0 0.45rem;
-  color: var(--line-strong);
 }
 
 .hero-title {
@@ -184,7 +223,7 @@ import { RouterLink } from "vue-router";
 .title-accent {
   font-family: var(--font-serif);
   font-style: italic;
-  font-weight: 500;
+  font-weight: var(--font-serif-weight);
   font-size: 0.92em;
   color: var(--accent-hover);
 }
@@ -222,7 +261,7 @@ import { RouterLink } from "vue-router";
   text-decoration: none;
   color: var(--void);
   background: var(--ink);
-  border: 1px solid rgb(255 255 255 / 0.12);
+  border: 1px solid var(--btn-ink-border);
   border-radius: 4px;
   transition:
     background 0.2s ease,
@@ -232,8 +271,8 @@ import { RouterLink } from "vue-router";
 }
 
 .cta-primary:hover {
-  background: #f2f5f1;
-  border-color: rgb(255 255 255 / 0.2);
+  background: var(--btn-ink-bg-hover);
+  border-color: var(--btn-ink-border-hover);
   transform: translateY(-1px);
 }
 
@@ -255,7 +294,7 @@ import { RouterLink } from "vue-router";
   text-transform: uppercase;
   text-decoration: none;
   color: var(--ink);
-  background: rgb(255 255 255 / 0.04);
+  background: var(--surface-faint);
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
   transition:
@@ -287,7 +326,7 @@ import { RouterLink } from "vue-router";
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
   font-size: clamp(0.5625rem, 0.55rem + 0.15vw, 0.625rem);
-  font-weight: 500;
+  font-weight: var(--font-mono-weight);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   text-decoration: none;
@@ -310,18 +349,7 @@ import { RouterLink } from "vue-router";
 
 @media (max-width: 640px) {
   .hero {
-    padding-top: clamp(2rem, 6vw, 3rem);
-  }
-
-  .hero-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    letter-spacing: 0.1em;
-  }
-
-  .meta-sep {
-    display: none;
+    padding-top: clamp(4.5rem, 20vh, 12rem);
   }
 
   .hero-cta {
@@ -344,6 +372,14 @@ import { RouterLink } from "vue-router";
 @media (prefers-reduced-motion: reduce) {
   .cta-primary:hover {
     transform: none;
+  }
+
+  .hero-brand {
+    animation: none;
+    background: var(--pop);
+    -webkit-background-clip: unset;
+    background-clip: unset;
+    color: var(--pop);
   }
 }
 </style>

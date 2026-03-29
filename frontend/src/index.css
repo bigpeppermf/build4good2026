@@ -5,9 +5,13 @@
 
   /* Typography */
   --font-display: "Syne", var(--font-sans);
-  --font-serif: "Cormorant Garamond", ui-serif, Georgia, "Times New Roman", serif;
+  /* Accent / former serif line — same family as UI mono for consistency */
+  --font-serif: "Jura", ui-sans-serif, system-ui, sans-serif;
+  --font-serif-weight: 700;
   --font-sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Gelasio", serif;
+  --font-mono: "Jura", ui-sans-serif, system-ui, sans-serif;
+  /* Jura caps at 700; heavier value uses synthesis where needed */
+  --font-mono-weight: 800;
 
   /* Layout — fluid page gutters + space for floating nav (top-right) */
   --page-pad-x: clamp(1rem, 4.5vw, 2rem);
@@ -23,15 +27,41 @@
   --bg-soft: #1a221d;
   --bg-glass: rgb(21 27 23 / 0.72);
 
-  --rose-line: rgb(232 200 188 / 0.18);
-  --rose-glow: rgb(255 200 180 / 0.08);
+  /* Warm coral rails (aligned with --pop) */
+  --rose-line: rgb(224 112 86 / 0.22);
+  --rose-glow: rgb(224 112 86 / 0.1);
 
   --ink: #e8ebe7;
   --ink-muted: #9aa399;
   --ink-faint: #6d756d;
 
-  --line: rgb(255 255 255 / 0.08);
-  --line-strong: rgb(255 255 255 / 0.14);
+  /* Hairlines & focus rails — pop family (was neutral white) */
+  --line: rgb(224 112 86 / 0.2);
+  --line-strong: rgb(224 112 86 / 0.34);
+
+  /* Inner top edge on elevated panels / cards */
+  --edge-inset: rgb(224 112 86 / 0.09);
+
+  /* Subtle fills (inputs, ghost controls, chips) */
+  --surface-faint: rgb(224 112 86 / 0.06);
+  --surface-mid: rgb(224 112 86 / 0.11);
+
+  /* Primary solid buttons on dark (ink fill) — borders & hover */
+  --btn-ink-border: rgb(224 112 86 / 0.4);
+  --btn-ink-border-hover: rgb(224 112 86 / 0.55);
+  --btn-ink-bg-hover: #ebe4e0;
+
+  /* Hero / emphasis shimmer (replaces cool white center) */
+  --hero-shimmer-mid: #ffd8ce;
+
+  /* Framing guides, high-contrast UI chrome on dark */
+  --frame-accent: rgb(224 112 86 / 0.92);
+  --overlay-control-fg: rgb(255 214 204 / 0.95);
+  --overlay-control-border: rgb(224 112 86 / 0.45);
+
+  /* Light chip on dark (timer etc.) — warm tint vs paper white */
+  --chip-warm-bg: rgb(48 32 28 / 0.92);
+  --chip-warm-border: rgb(224 112 86 / 0.42);
 
   /* Deep wells (video, emphasis) */
   --void: #050706;

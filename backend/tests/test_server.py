@@ -129,6 +129,41 @@ class TestProcessFrameEndpoint:
 
 
 # ------------------------------------------------------------------ #
+# POST /agent/process-capture                                          #
+# ------------------------------------------------------------------ #
+
+
+class TestProcessCaptureEndpoint:
+    def test_invalid_session_id_returns_404(self):
+        # Multipart: text fields in ``data``, file in ``files`` (httpx/Starlette).
+        res = client.post(
+            "/agent/process-capture",
+            data={"session_id": "not-a-real-id", "timestamp_ms": "0"},
+            files={"frame": ("f.jpg", b"\xff\xd8\xff\xe0", "image/jpeg")},
+        )
+        assert res.status_code == 404
+        assert "session_id" in res.json()["error"].lower()
+
+    def test_missing_frame_returns_400(self):
+        sid = create_session()
+        res = client.post(
+            "/agent/process-capture",
+            data={"session_id": sid, "timestamp_ms": "0"},
+        )
+        assert res.status_code == 400
+        assert "frame" in res.json()["error"].lower()
+
+    def test_empty_frame_returns_400(self):
+        sid = create_session()
+        res = client.post(
+            "/agent/process-capture",
+            data={"session_id": sid, "timestamp_ms": "0"},
+            files={"frame": ("empty.jpg", b"", "image/jpeg")},
+        )
+        assert res.status_code == 400
+
+
+# ------------------------------------------------------------------ #
 # POST /end-session                                                    #
 # ------------------------------------------------------------------ #
 
