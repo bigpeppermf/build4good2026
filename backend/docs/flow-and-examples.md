@@ -7,68 +7,80 @@ How the system works end-to-end, with worked examples showing how frames become 
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  User draws on whiteboard                                           │
-│           │                                                         │
-│           ▼                                                         │
-│  Frame filter + OCR + change describer                              │
-│  Receives: JPEG frame                                               │
-│  Produces: visual_delta text description                            │
-│           │                                                         │
-│           ▼  POST /agent/process-capture { session_id, frame JPEG } │
-│     WhiteboardAgent (LangChain + Gemini 2.0 Flash)                  │
-│     Decides which graph tools to call                               │
-│           │                                                         │
-│           ▼  direct in-process calls                                │
-│  ┌─────────────────────────┐                                        │
-│  │  SystemDesignGraph      │                                        │
-│  │  (per-session, in RAM)  │                                        │
-│  └─────────────────────────┘                                        │
-│           │                                                         │
-│     Frontend sends POST /end-session { session_id } when done       │
-│           │                                                         │
-│           ▼                                                         │
-│     MongoDB Atlas                                                   │
-│     system_design.sessions  (one doc — structure)                   │
-│     system_design.nodes     (one doc per component — details)       │
-└─────────────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------------+
+|  User draws on whiteboard                                           |
+|           |                                                         |
+|           v                                                         |
+|  Frame filter (YOLO person detection + dedup)                       |
+|  Receives: JPEG frame                                               |
+|           |                                                         |
+|           v                                                         |
+|  Gemini Vision API                                                  |
+|  Receives: accepted frame + previous description                    |
+|  Produces: visual_delta text description                            |
+|           |                                                         |
+|           v  POST /agent/process-capture { session_id, frame JPEG } |
+|     WhiteboardAgent (LangChain + Gemini 2.5 Flash Lite)             |
+|     Decides which graph tools to call                               |
+|           |                                                         |
+|           v  direct in-process calls                                |
+|  +-------------------------+                                        |
+|  |  SystemDesignGraph      |                                        |
+|  |  (per-session, in RAM)  |                                        |
+|  +-------------------------+                                        |
+|           |                                                         |
+|     Frame data (visual_delta + verbal_response) saved to MongoDB    |
+|     in real time after each processed frame                         |
+|           |                                                         |
+|     Frontend sends POST /end-session { session_id } when done       |
+|           |                                                         |
+|           v                                                         |
+|     MongoDB Atlas                                                   |
+|     system_design.sessions  (one doc -- structure)                  |
+|     system_design.nodes     (one doc per component -- details)      |
+|     system_design.frames    (one doc per processed frame)           |
++---------------------------------------------------------------------+
 ```
 
 ---
 
 ## The Four Phases
 
-### Phase 1 — Start session
+### Phase 1 -- Start session
 
 The frontend calls `POST /new-session`. The server creates a fresh `SystemDesignGraph`
 and a `WhiteboardAgent` bound to it, stores both under a UUID, and returns the
 `session_id`. All subsequent calls include this ID.
 
-### Phase 2 — Live session (in-memory only)
+### Phase 2 -- Live session (real-time persistence)
 
-As the user draws, the frontend posts each JPEG frame to `POST /agent/process-capture`. The backend runs the visual-delta pipeline internally before calling the agent:
+As the user draws, the frontend posts each JPEG frame to `POST /agent/process-capture`. The backend runs the visual-delta pipeline:
 
 1. Decode the incoming frame
-2. Reject if a person is visible
+2. Reject if a person is visible (YOLO)
 3. Reject if the frame is too similar to the last accepted frame
-4. Run OCR on the accepted frame — extract component labels, annotation text, and simple connections
-5. Compare the current OCR snapshot to the previous one
-6. Generate a plain-English `visual_delta` (e.g. `"A box labeled 'Redis' was drawn with an arrow from 'API'"`)
+4. Send the accepted frame image to **Gemini Vision API** along with a description of the previous frame
+5. Gemini Vision returns a plain-English description of what changed (the `visual_delta`)
+6. Pass the `visual_delta` to the Gemini agent
 
 The agent receives that `visual_delta` text and runs a tool-call loop with Gemini: it keeps
 calling graph tools until Gemini stops requesting them, then returns one sentence spoken
-aloud to the user. All graph mutations are instantaneous Python dict operations —
+aloud to the user. All graph mutations are instantaneous Python dict operations --
 no I/O, no network.
 
-### Phase 3 — BFS + MongoDB write
+After each processed frame, the `visual_delta` and `verbal_response` are **saved to MongoDB** in the `frames` collection, tied to the session ID. This means frame-level data is persisted in real time, not just at session end.
+
+### Phase 3 -- BFS + MongoDB write
 
 When the frontend calls `POST /end-session`, the server runs a BFS traversal from
 the entry point node to produce `traversal_order`, then writes two MongoDB
 collections. The session is removed from memory after saving.
 
 The `SessionStore` makes two writes:
-1. One **session document** — the skeleton (edges + traversal order)
-2. One **node document per component** — label, type, details, and `traversal_index` in the BFS walk
+1. One **session document** -- the skeleton (edges + traversal order + frame count)
+2. One **node document per component** -- label, type, details, and `traversal_index` in the BFS walk
+
+Frame documents were already written during Phase 2.
 
 ---
 
@@ -76,34 +88,34 @@ The `SessionStore` makes two writes:
 
 ```
 New component introduced?
-│
-├── Is it the user-facing entry (browser, CDN, mobile app)?
-│     └── create_node() → set_entry_point()
-│
-├── Does it belong between two already-connected components?
-│     └── get_graph_state() to confirm edge exists
-│           └── insert_node_between()
-│
-├── Does it connect to something at the edge of the current graph?
-│     └── create_node() → add_edge()
-│
-└── Does it add more information to an existing component?
-      └── add_details_to_node()
+|
++-- Is it the user-facing entry (browser, CDN, mobile app)?
+|     +-- create_node() -> set_entry_point()
+|
++-- Does it belong between two already-connected components?
+|     +-- get_graph_state() to confirm edge exists
+|           +-- insert_node_between()
+|
++-- Does it connect to something at the edge of the current graph?
+|     +-- create_node() -> add_edge()
+|
++-- Does it add more information to an existing component?
+      +-- add_details_to_node()
 
 User removes or replaces a component?
-│
-├── Component removed entirely → delete_node()
-└── Connection redirected → remove_edge() → add_edge()
+|
++-- Component removed entirely -> delete_node()
++-- Connection redirected -> remove_edge() -> add_edge()
 
 Unsure about current topology before a structural change?
-└── get_graph_state() — always call this to fact-check first
++-- get_graph_state() -- always call this to fact-check first
 ```
 
 ---
 
-## Example 1 — Simple 3-tier web app
+## Example 1 -- Simple 3-tier web app
 
-**What the user builds:** Browser → API → PostgreSQL
+**What the user builds:** Browser -> API -> PostgreSQL
 
 ---
 
@@ -119,7 +131,7 @@ Unsure about current topology before a structural change?
 Agent tool calls:
 ```python
 create_node("api", "API", "service")
-# → {"status": "created", "node": {"id": "api", "label": "API", "type": "service"}}
+# -> {"status": "created", "node": {"id": "api", "label": "API", "type": "service"}}
 ```
 
 Graph state:
@@ -147,7 +159,7 @@ add_details_to_node("db", {"technology": "PostgreSQL 15"})
 
 Graph state:
 ```
-api ──[writes to]──▶ db
+api --[writes to]--> db
 ```
 
 ---
@@ -170,7 +182,7 @@ set_entry_point("browser")
 
 Graph state:
 ```
-browser ──[HTTP requests]──▶ api ──[writes to]──▶ db
+browser --[HTTP requests]--> api --[writes to]--> db
 Entry point: browser
 BFS order:  [browser, api, db]
 ```
@@ -190,20 +202,26 @@ MongoDB writes:
   "edges": [
     {"from": "browser", "to": "api", "label": "HTTP requests"},
     {"from": "api",     "to": "db",  "label": "writes to"}
-  ]
+  ],
+  "frames_count": 3
 }
 
 // nodes collection (3 documents)
 {"node_id": "browser", "traversal_index": 0, "type": "client",   "details": {}}
 {"node_id": "api",     "traversal_index": 1, "type": "service",  "details": {}}
 {"node_id": "db",      "traversal_index": 2, "type": "database", "details": {"technology": "PostgreSQL 15"}}
+
+// frames collection (3 documents, written during the session)
+{"session_id": "abc-123", "timestamp_ms": 5000,  "visual_delta": "A box labeled 'API' was drawn", "verbal_response": "..."}
+{"session_id": "abc-123", "timestamp_ms": 18000, "visual_delta": "A box labeled 'PostgreSQL' was drawn with an arrow from 'API'", "verbal_response": "..."}
+{"session_id": "abc-123", "timestamp_ms": 31000, "visual_delta": "A box labeled 'Browser' was drawn with an arrow to 'API'", "verbal_response": "..."}
 ```
 
 ---
 
-## Example 2 — Inserting a component between two connected ones
+## Example 2 -- Inserting a component between two connected ones
 
-**Scenario:** The user has `browser → api` already in the graph. They draw a load balancer in front of the API.
+**Scenario:** The user has `browser -> api` already in the graph. They draw a load balancer in front of the API.
 
 ---
 
@@ -220,7 +238,7 @@ Agent first fact-checks the current topology:
 ```python
 get_graph_state()
 # Returns: edges: [{"from": "browser", "to": "api", "label": "HTTP requests"}]
-# Confirms: browser → api edge exists
+# Confirms: browser -> api edge exists
 ```
 
 Agent then inserts:
@@ -237,22 +255,22 @@ insert_node_between(
 ```
 
 What happens internally:
-1. Edge `browser → api` is removed
+1. Edge `browser -> api` is removed
 2. Node `lb` is created
-3. Edge `browser → lb` is added
-4. Edge `lb → api` is added
+3. Edge `browser -> lb` is added
+4. Edge `lb -> api` is added
 
 Graph state after:
 ```
-browser ──[HTTP requests]──▶ lb ──[routes to]──▶ api ──[writes to]──▶ db
+browser --[HTTP requests]--> lb --[routes to]--> api --[writes to]--> db
 BFS order: [browser, lb, api, db]
 ```
 
 ---
 
-## Example 3 — User corrects a mistake
+## Example 3 -- User corrects a mistake
 
-**Scenario:** The user erases the direct API→DB connection and draws a Redis cache in between.
+**Scenario:** The user erases the direct API->DB connection and draws a Redis cache in between.
 
 ---
 
@@ -270,20 +288,20 @@ Agent tool calls:
 remove_edge("api", "db")
 create_node("cache", "Redis Cache", "cache")
 add_edge("api", "cache", "reads/writes")
-add_edge("cache", "db", "cache miss → writes to")
+add_edge("cache", "db", "cache miss -> writes to")
 add_details_to_node("cache", {"technology": "Redis 7", "strategy": "write-through"})
 ```
 
 Graph state after:
 ```
-browser → lb → api → cache → db
-                       ↑
-                  (Redis 7, write-through)
+browser -> lb -> api -> cache -> db
+                         ^
+                    (Redis 7, write-through)
 ```
 
 ---
 
-## Example 4 — Branching design (fan-out)
+## Example 4 -- Branching design (fan-out)
 
 **Scenario:** An API that writes to two different stores.
 
@@ -310,8 +328,8 @@ add_details_to_node("s3", {"role": "file uploads", "technology": "AWS S3"})
 
 Graph state:
 ```
-browser → lb → api ──[writes user records]──▶ db
-                   └──[uploads files]────────▶ s3
+browser -> lb -> api --[writes user records]--> db
+                    +--[uploads files]--------> s3
 ```
 
 BFS order from `browser`: `[browser, lb, api, db, s3]`
@@ -334,15 +352,15 @@ Both `db` and `s3` are at depth 3. BFS visits them in the order their edges were
 ## BFS Traversal and `traversal_index`
 
 `traversal_index` is the position of a node in the BFS walk from the entry point.
-It captures the user's conceptual order — from the user-facing layer inward to
+It captures the user's conceptual order -- from the user-facing layer inward to
 the data layer.
 
 ```
 Entry point: browser (index 0)
-  → lb       (index 1)
-    → api    (index 2)
-      → db   (index 3)
-      → s3   (index 4)
+  -> lb       (index 1)
+    -> api    (index 2)
+      -> db   (index 3)
+      -> s3   (index 4)
 ```
 
 This index is used for scoring: two users who both built a 5-node design can be

@@ -5,7 +5,7 @@ Endpoints:
   GET  /docs                    — API reference rendered as HTML
   POST /new-session             — create an isolated graph + agent + CV pipeline for a user
   POST /agent/process-frame   — send a visual_delta (JSON) to the Gemini agent
-  POST /agent/process-capture — multipart JPEG + session_id; runs visual_delta pipeline then agent
+  POST /agent/process-capture — multipart JPEG + session_id; runs Gemini Vision pipeline then agent
   POST /end-session           — save the completed graph to MongoDB
 
 Run:
@@ -131,9 +131,9 @@ async def new_session(_request: Request) -> JSONResponse:
     Creates a fresh graph and agent for a new user session.
     Returns a session_id that must be included in all subsequent requests.
 
-    The ``VisualDeltaPipeline`` (YOLO/OCR) is created lazily on the first
-    ``POST /agent/process-capture`` so importing this module does not load
-    heavyweight CV dependencies.
+    The ``VisualDeltaPipeline`` (YOLO + Gemini Vision) is created lazily on
+    the first ``POST /agent/process-capture`` so importing this module does
+    not load heavyweight CV dependencies.
     """
     session_id = str(uuid.uuid4())
     graph = SystemDesignGraph()
@@ -212,6 +212,25 @@ async def end_session(request: Request) -> JSONResponse:
     return JSONResponse({"status": "saved", **summary})
 
 
+def _pipeline_error_message(exc: BaseException) -> str:
+    """Turn low-level import/CV failures into actionable text for the browser."""
+    raw = str(exc)
+    low = raw.lower()
+    if isinstance(exc, ImportError):
+        return (
+            "CV dependencies failed to import. In the backend folder run: "
+            "uv sync && uv run main.py"
+        )
+    if "numpy" in low and (
+        "not available" in low or "no module named" in low or "failed" in low
+    ):
+        return (
+            "NumPy/OpenCV could not load in this Python environment. "
+            "Run the API from the backend folder with: uv sync && uv run main.py"
+        )
+    return raw
+
+
 async def process_capture(request: Request) -> JSONResponse:
     """
     POST /agent/process-capture
@@ -251,7 +270,7 @@ async def process_capture(request: Request) -> JSONResponse:
     try:
         pipeline_result = pipeline.process_frame(frame_bytes, timestamp_ms)
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": _pipeline_error_message(exc)}, status_code=500)
 
     if pipeline_result is None:
         return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
@@ -264,13 +283,21 @@ async def process_capture(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
 
+    # Persist frame data to MongoDB in the background.
+    try:
+        await _store.save_frame(
+            session_id=session_id,
+            timestamp_ms=timestamp_ms,
+            visual_delta=pipeline_result["visual_delta"],
+            verbal_response=verbal_response,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # Non-critical — don't fail the response if the write fails.
+
     return JSONResponse(
         {
             "verbal_response": verbal_response,
             "visual_delta": pipeline_result["visual_delta"],
-            "labels": pipeline_result["labels"],
-            "annotations": pipeline_result["annotations"],
-            "connections": pipeline_result["connections"],
             "timestamp_ms": timestamp_ms,
         }
     )
