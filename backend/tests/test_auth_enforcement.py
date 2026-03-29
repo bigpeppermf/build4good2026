@@ -1,8 +1,8 @@
 """
 Tests for authentication and session-ownership enforcement in server/app.py.
 
-These tests do NOT use the autouse auth patch from test_server.py.
-Instead they control _require_auth / verify_clerk_token precisely to verify:
+These tests patch server.app.require_auth (the sync function imported from
+server.auth) to control the auth result precisely and verify:
   - Every protected endpoint returns 401 when no Bearer token is supplied.
   - Every protected endpoint returns 401 when the token is invalid/expired.
   - Session-scoped endpoints return 403 when a different user presents a
@@ -11,7 +11,7 @@ Instead they control _require_auth / verify_clerk_token precisely to verify:
 """
 
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,9 +19,11 @@ os.environ.setdefault("GOOGLE_API_KEY", "test-key-stub")
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.test/.well-known/jwks.json")
 
+from starlette.responses import JSONResponse  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 from server.app import app, _sessions, _session_owners  # noqa: E402
+from server.auth import AuthContext  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -38,14 +40,29 @@ def _auth_as(user_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer fake-token-for-{user_id}"}
 
 
-def _mock_auth(user_id: str) -> AsyncMock:
-    return AsyncMock(return_value=user_id)
+def _make_auth_context(user_id: str) -> AuthContext:
+    return AuthContext(user_id=user_id, clerk_session_id=None, payload={"sub": user_id})
+
+
+def _mock_auth_ok(user_id: str):
+    """Return a mock require_auth that succeeds for user_id."""
+    return MagicMock(return_value=_make_auth_context(user_id))
+
+
+def _mock_auth_401(message: str = "Authentication required."):
+    """Return a mock require_auth that returns a 401 JSONResponse."""
+    return MagicMock(return_value=JSONResponse({"error": message}, status_code=401))
+
+
+def _mock_auth_500(message: str = "Server authentication is not configured."):
+    """Return a mock require_auth that returns a 500 JSONResponse."""
+    return MagicMock(return_value=JSONResponse({"error": message}, status_code=500))
 
 
 def _create_session_as(user_id: str) -> str:
     """Create a session owned by user_id and return the session_id."""
     import server.app as srv
-    with patch.object(srv, "_require_auth", _mock_auth(user_id)):
+    with patch.object(srv, "require_auth", _mock_auth_ok(user_id)):
         res = client.post("/new-session", headers=_auth_as(user_id))
     assert res.status_code == 200, res.text
     return res.json()["session_id"]
@@ -64,19 +81,19 @@ class TestUnauthenticatedRequests:
 
     def test_new_session_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.post("/new-session")
         self._assert_401(res)
 
     def test_process_frame_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.post("/agent/process-frame", json={"session_id": "x", "visual_delta": "y"})
         self._assert_401(res)
 
     def test_process_capture_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.post(
                 "/agent/process-capture",
                 data={"session_id": "x"},
@@ -86,7 +103,7 @@ class TestUnauthenticatedRequests:
 
     def test_end_session_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.post(
                 "/end-session",
                 data={"session_id": "x"},
@@ -96,23 +113,24 @@ class TestUnauthenticatedRequests:
 
     def test_analysis_status_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.get("/analysis/some-session-id")
         self._assert_401(res)
 
     def test_chat_no_token(self):
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Missing or malformed Authorization header."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Missing or malformed Authorization header.")):
             res = client.post("/chat", json={"session_id": "x", "message": "hi"})
         self._assert_401(res)
 
     def test_invalid_token_returns_401(self):
-        """simulate an expired/malformed JWT being rejected by verify_clerk_token"""
+        """simulate an expired/malformed JWT being rejected"""
         import server.app as srv
-        with patch.object(srv, "_require_auth", AsyncMock(side_effect=ValueError("Token verification failed: Signature has expired."))):
+        with patch.object(srv, "require_auth", _mock_auth_401("Token has expired and is no longer valid.")):
             res = client.post("/new-session", headers={"Authorization": "Bearer expired.token.here"})
         self._assert_401(res)
-        assert "token" in res.json()["error"].lower() or "authorization" in res.json()["error"].lower()
+        body = res.json()
+        assert "token" in body["error"].lower() or "authorization" in body["error"].lower() or "expired" in body["error"].lower()
 
 
 # ------------------------------------------------------------------ #
@@ -125,7 +143,7 @@ class TestOwnershipEnforcement:
     def test_process_frame_wrong_user_returns_403(self):
         import server.app as srv
         sid = _create_session_as(USER_A)
-        with patch.object(srv, "_require_auth", _mock_auth(USER_B)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_B)):
             res = client.post(
                 "/agent/process-frame",
                 json={"session_id": sid, "visual_delta": "boxes drawn", "timestamp_ms": 0},
@@ -140,7 +158,7 @@ class TestOwnershipEnforcement:
     def test_process_capture_wrong_user_returns_403(self):
         import server.app as srv
         sid = _create_session_as(USER_A)
-        with patch.object(srv, "_require_auth", _mock_auth(USER_B)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_B)):
             res = client.post(
                 "/agent/process-capture",
                 data={"session_id": sid, "timestamp_ms": "0"},
@@ -154,7 +172,7 @@ class TestOwnershipEnforcement:
     def test_end_session_wrong_user_returns_403(self):
         import server.app as srv
         sid = _create_session_as(USER_A)
-        with patch.object(srv, "_require_auth", _mock_auth(USER_B)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_B)):
             res = client.post(
                 "/end-session",
                 data={"session_id": sid},
@@ -171,8 +189,8 @@ class TestOwnershipEnforcement:
         import server.app as srv
         sid = _create_session_as(USER_A)
         # Simulate the analysis job being queued (as if end_session was called by owner)
-        srv._analysis_jobs[sid] = {"session_id": sid, "status": "processing", "stage": "queued"}
-        with patch.object(srv, "_require_auth", _mock_auth(USER_B)):
+        srv._analysis_jobs[sid] = {"session_id": sid, "status": "processing", "stage": "queued", "user_id": USER_A}
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_B)):
             res = client.get(f"/analysis/{sid}", headers=_auth_as(USER_B))
         assert res.status_code == 403, res.text
         _sessions.pop(sid, None)
@@ -188,7 +206,7 @@ class TestOwnershipEnforcement:
             "chat_seed_context": "Session context for Alice.",
         }
         with (
-            patch.object(srv, "_require_auth", _mock_auth(USER_B)),
+            patch.object(srv, "require_auth", _mock_auth_ok(USER_B)),
             patch.object(srv._store, "get_analysis", AsyncMock(return_value=analysis_doc)),
         ):
             res = client.post(
@@ -210,7 +228,6 @@ class TestOwnerAccess:
 
     def test_owner_can_call_process_frame(self):
         from langchain_core.messages import AIMessage
-        from unittest.mock import MagicMock
         import server.app as srv
 
         sid = _create_session_as(USER_A)
@@ -228,7 +245,7 @@ class TestOwnerAccess:
         srv._sessions[sid]["agent"].llm_with_tools = mock_llm
 
         try:
-            with patch.object(srv, "_require_auth", _mock_auth(USER_A)):
+            with patch.object(srv, "require_auth", _mock_auth_ok(USER_A)):
                 res = client.post(
                     "/agent/process-frame",
                     json={"session_id": sid, "visual_delta": "API box drawn", "timestamp_ms": 0},
@@ -254,7 +271,7 @@ class TestOwnerAccess:
         mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
 
         with (
-            patch.object(srv, "_require_auth", _mock_auth(USER_A)),
+            patch.object(srv, "require_auth", _mock_auth_ok(USER_A)),
             patch.object(srv._store, "save_session", mock_save),
             patch.object(srv._store, "save_analysis", mock_save_analysis),
         ):
@@ -271,9 +288,9 @@ class TestOwnerAccess:
         import server.app as srv
 
         sid = _create_session_as(USER_A)
-        srv._analysis_jobs[sid] = {"session_id": sid, "status": "complete", "stage": "complete"}
+        srv._analysis_jobs[sid] = {"session_id": sid, "status": "complete", "stage": "complete", "user_id": USER_A}
 
-        with patch.object(srv, "_require_auth", _mock_auth(USER_A)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_A)):
             res = client.get(f"/analysis/{sid}", headers=_auth_as(USER_A))
 
         assert res.status_code == 200, res.text
@@ -299,7 +316,7 @@ class TestOwnerAccess:
                 return "Consider adding a cache layer."
 
         with (
-            patch.object(srv, "_require_auth", _mock_auth(USER_A)),
+            patch.object(srv, "require_auth", _mock_auth_ok(USER_A)),
             patch.object(srv._store, "get_analysis", AsyncMock(return_value=analysis_doc)),
             patch.object(srv, "ChatAgent", FakeChatAgent),
         ):
@@ -333,7 +350,7 @@ class TestUserSessionIsolation:
         assert _session_owners.get(sid_b) == USER_B
 
         # User A cannot touch User B's session
-        with patch.object(srv, "_require_auth", _mock_auth(USER_A)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_A)):
             res = client.post(
                 "/agent/process-frame",
                 json={"session_id": sid_b, "visual_delta": "intruder", "timestamp_ms": 0},
@@ -342,7 +359,7 @@ class TestUserSessionIsolation:
         assert res.status_code == 403
 
         # User B cannot touch User A's session
-        with patch.object(srv, "_require_auth", _mock_auth(USER_B)):
+        with patch.object(srv, "require_auth", _mock_auth_ok(USER_B)):
             res = client.post(
                 "/agent/process-frame",
                 json={"session_id": sid_a, "visual_delta": "intruder", "timestamp_ms": 0},
@@ -368,36 +385,34 @@ class TestUserSessionIsolation:
 
 
 # ------------------------------------------------------------------ #
-# CLERK_JWKS_URL misconfiguration — must return 500, not crash        #
+# CLERK_SECRET_KEY misconfiguration — must return 500, not crash      #
 # ------------------------------------------------------------------ #
 
-class TestMisconfiguredJwksUrl:
+class TestMisconfiguredAuth:
     """
-    When CLERK_JWKS_URL is missing or wrong the server must return a clean
-    JSON 500 response instead of crashing with an unhandled RuntimeError.
+    When the server-side auth config is broken, endpoints must return a clean
+    JSON 500 response instead of crashing.
     """
 
     def _assert_config_error(self, response) -> None:
         assert response.status_code == 500, response.text
         body = response.json()
         assert "error" in body
-        assert "configuration" in body["error"].lower() or "clerk_jwks_url" in body["error"].lower()
+        assert (
+            "configuration" in body["error"].lower()
+            or "configured" in body["error"].lower()
+            or "clerk" in body["error"].lower()
+        )
 
-    def test_new_session_returns_500_when_jwks_url_missing(self):
+    def test_new_session_returns_500_when_auth_misconfigured(self):
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.post("/new-session")
         self._assert_config_error(res)
 
-    def test_process_frame_returns_500_when_jwks_url_missing(self):
+    def test_process_frame_returns_500_when_auth_misconfigured(self):
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.post(
                 "/agent/process-frame",
                 json={"session_id": "x", "visual_delta": "y"},
@@ -405,12 +420,9 @@ class TestMisconfiguredJwksUrl:
             )
         self._assert_config_error(res)
 
-    def test_end_session_returns_500_when_jwks_url_missing(self):
+    def test_end_session_returns_500_when_auth_misconfigured(self):
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.post(
                 "/end-session",
                 data={"session_id": "x"},
@@ -419,24 +431,18 @@ class TestMisconfiguredJwksUrl:
             )
         self._assert_config_error(res)
 
-    def test_analysis_status_returns_500_when_jwks_url_missing(self):
+    def test_analysis_status_returns_500_when_auth_misconfigured(self):
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.get(
                 "/analysis/some-session",
                 headers={"Authorization": "Bearer some-token"},
             )
         self._assert_config_error(res)
 
-    def test_chat_returns_500_when_jwks_url_missing(self):
+    def test_chat_returns_500_when_auth_misconfigured(self):
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.post(
                 "/chat",
                 json={"session_id": "x", "message": "hi"},
@@ -447,10 +453,7 @@ class TestMisconfiguredJwksUrl:
     def test_config_error_response_is_json(self):
         """The 500 response must be valid JSON with an 'error' key, not an HTML crash page."""
         import server.app as srv
-        with patch.object(
-            srv, "_require_auth",
-            AsyncMock(side_effect=RuntimeError("CLERK_JWKS_URL is not set.")),
-        ):
+        with patch.object(srv, "require_auth", _mock_auth_500()):
             res = client.post("/new-session")
         assert "application/json" in res.headers.get("content-type", "")
         assert "error" in res.json()

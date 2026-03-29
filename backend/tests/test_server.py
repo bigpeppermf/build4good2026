@@ -220,7 +220,7 @@ class TestProcessFrameEndpoint:
         res = client.post(
             "/agent/process-frame",
             content=b"not json",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **auth_headers()},
         )
         assert res.status_code == 400
         assert "json" in res.json()["error"].lower()
@@ -317,7 +317,7 @@ class TestProcessCaptureEndpoint:
             headers=auth_headers("other-user"),
         )
 
-        assert res.status_code == 404
+        assert res.status_code == 403
 
 
 # ------------------------------------------------------------------ #
@@ -350,7 +350,7 @@ class TestEndSessionEndpoint:
         res = client.post(
             "/end-session",
             content=b"not form",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **auth_headers()},
         )
         assert res.status_code == 400
 
@@ -603,7 +603,7 @@ class TestAnalysisStatusEndpoint:
             wait_for_analysis_final(sid, user_id="owner-user")
 
         foreign = client.get(f"/analysis/{sid}", headers=auth_headers("other-user"))
-        assert foreign.status_code == 404
+        assert foreign.status_code == 403
 
 
 # ------------------------------------------------------------------ #
@@ -622,7 +622,7 @@ class TestChatEndpoint:
         res = client.post(
             "/chat",
             content=b"not-json",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **auth_headers()},
         )
         assert res.status_code == 400
         assert "json" in res.json()["error"].lower()
@@ -748,7 +748,7 @@ class TestSessionIsolation:
             headers=auth_headers("other-user"),
         )
 
-        assert res.status_code == 404
+        assert res.status_code == 403
 
     def test_two_sessions_have_independent_graphs(self):
         from unittest.mock import MagicMock

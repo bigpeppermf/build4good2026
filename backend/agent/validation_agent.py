@@ -170,16 +170,28 @@ class ValidationAgent:
             for call in response.tool_calls:
                 fn = self.tool_map.get(call["name"])
                 if fn is None:
+                    tool_messages.append(
+                        ToolMessage(
+                            name=call["name"],
+                            content=f"Error: unknown tool '{call['name']}'",
+                            tool_call_id=call["id"],
+                        )
+                    )
                     continue
                 before_state = self.graph.get_state()
-                result = fn.invoke(call["args"])
+                try:
+                    result = fn.invoke(call["args"])
+                    content = str(result)
+                except Exception as tool_exc:  # noqa: BLE001
+                    content = f"Error: {tool_exc}"
+                    result = None
                 after_state = self.graph.get_state()
-                if before_state != after_state:
+                if result is not None and before_state != after_state:
                     corrections_made += 1
                 tool_messages.append(
                     ToolMessage(
                         name=call["name"],
-                        content=str(result),
+                        content=content,
                         tool_call_id=call["id"],
                     )
                 )

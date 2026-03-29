@@ -17,7 +17,10 @@
       "Bash(.venv/bin/pytest tests/test_validation_agent.py tests/test_analysis_agent.py -v 2>&1 | tail -20)",
       "Bash(.venv/bin/pytest tests/test_server.py::TestAnalysisStatusEndpoint::test_complete_payload_includes_analysis_output -v 2>&1 | tail -30)",
       "Bash(.venv/bin/pytest tests/test_validation_agent.py tests/test_analysis_agent.py tests/test_server.py::TestAnalysisStatusEndpoint -q 2>&1 | tail -10)",
-      "Bash(.venv/bin/pytest tests/ -q --ignore=tests/test_auth_enforcement.py --ignore=tests/test_session_store.py 2>&1 | tail -10)"
+      "Bash(.venv/bin/pytest tests/ -q --ignore=tests/test_auth_enforcement.py --ignore=tests/test_session_store.py 2>&1 | tail -10)",
+      "Bash(python -c \"\nfrom clerk_backend_api.security.types import AuthenticateRequestOptions\nimport inspect\nprint\\(inspect.signature\\(AuthenticateRequestOptions.__init__\\)\\)\n\" 2>&1 | head -30)",
+      "Bash(sed -i '' '320s/assert res.status_code == 404/assert res.status_code == 403/' /Users/alemanb/Documents/build4good2026/backend/tests/test_server.py && sed -i '' '606s/assert foreign.status_code == 404/assert foreign.status_code == 403/' /Users/alemanb/Documents/build4good2026/backend/tests/test_server.py && sed -i '' '751s/assert res.status_code == 404/assert res.status_code == 403/' /Users/alemanb/Documents/build4good2026/backend/tests/test_server.py)",
+      "Bash(nc -zv ac-5rvfnil-shard-00-00.hgust9k.mongodb.net 27017 2>&1 && echo \"TCP open\" || echo \"TCP blocked\")"
     ]
   }
 }

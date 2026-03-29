@@ -23,10 +23,19 @@ export async function authenticatedFetch(
   const headers = new Headers(init.headers ?? undefined);
   headers.set("Authorization", `Bearer ${token}`);
 
-  return fetch(input, {
-    ...init,
-    headers,
-  });
+  const res = await fetch(input, { ...init, headers });
+
+  // If the server rejected the token (expired, etc.), refresh and retry once.
+  if (res.status === 401) {
+    const freshToken = await getToken?.();
+    if (freshToken && freshToken !== token) {
+      const retryHeaders = new Headers(init.headers ?? undefined);
+      retryHeaders.set("Authorization", `Bearer ${freshToken}`);
+      return fetch(input, { ...init, headers: retryHeaders });
+    }
+  }
+
+  return res;
 }
 
 export function useMirageAuth() {

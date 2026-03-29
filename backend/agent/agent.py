@@ -302,12 +302,23 @@ class WhiteboardAgent:
             for call in response.tool_calls:
                 fn = self.tool_map.get(call["name"])
                 if fn is None:
+                    tool_messages.append(
+                        ToolMessage(
+                            name=call["name"],
+                            content=f"Error: unknown tool '{call['name']}'",
+                            tool_call_id=call["id"],
+                        )
+                    )
                     continue
-                result = fn.invoke(call["args"])
+                try:
+                    result = fn.invoke(call["args"])
+                    content = str(result)
+                except Exception as tool_exc:  # noqa: BLE001
+                    content = f"Error: {tool_exc}"
                 tool_messages.append(
                     ToolMessage(
                         name=call["name"],
-                        content=str(result),
+                        content=content,
                         tool_call_id=call["id"],
                     )
                 )

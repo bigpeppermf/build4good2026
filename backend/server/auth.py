@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -8,6 +9,8 @@ from clerk_backend_api.security import authenticate_request
 from clerk_backend_api.security.types import AuthenticateRequestOptions
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_AUTHORIZED_PARTIES = ["http://localhost:5173"]
 
@@ -44,8 +47,18 @@ def require_auth(request: Request) -> AuthContext | JSONResponse:
     )
 
     if not request_state.is_signed_in or request_state.payload is None:
+        reason_code = request_state.reason.value[0] if request_state.reason else "unknown"
+        _log.warning(
+            "auth rejected: reason=%s message=%s path=%s",
+            reason_code,
+            request_state.message,
+            getattr(request, "url", "?"),
+        )
         return JSONResponse(
-            {"error": request_state.message or "Authentication required."},
+            {
+                "error": request_state.message or "Authentication required.",
+                "reason": reason_code,
+            },
             status_code=401,
         )
 

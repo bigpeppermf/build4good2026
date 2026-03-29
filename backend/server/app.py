@@ -68,21 +68,30 @@ def _analysis_response_payload(payload: dict | None) -> dict | None:
     }
 
 
-def _owned_live_session(session_id: str, auth: AuthContext) -> dict | None:
+_FORBIDDEN_SENTINEL = object()  # distinct from None (not found) vs dict (found + owned)
+
+
+def _forbidden() -> JSONResponse:
+    return JSONResponse({"error": "Forbidden: you do not own this session."}, status_code=403)
+
+
+def _owned_live_session(session_id: str, auth: AuthContext):
+    """Return the session dict, _FORBIDDEN_SENTINEL (wrong owner), or None (not found)."""
     session = _sessions.get(session_id)
     if session is None:
         return None
     if session.get("user_id") != auth.user_id:
-        return None
+        return _FORBIDDEN_SENTINEL
     return session
 
 
-def _owned_analysis_job(session_id: str, auth: AuthContext) -> dict | None:
+def _owned_analysis_job(session_id: str, auth: AuthContext):
+    """Return the job dict, _FORBIDDEN_SENTINEL (wrong owner), or None (not found)."""
     payload = _analysis_jobs.get(session_id)
     if payload is None:
         return None
     if payload.get("user_id") != auth.user_id:
-        return None
+        return _FORBIDDEN_SENTINEL
     return payload
 
 
@@ -228,6 +237,8 @@ async def process_frame(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     session = _owned_live_session(session_id, auth)
+    if session is _FORBIDDEN_SENTINEL:
+        return _forbidden()
     if session is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
@@ -259,6 +270,8 @@ async def analysis_status(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Missing 'session_id' path parameter."}, status_code=400)
 
     status_payload = _owned_analysis_job(session_id, auth)
+    if status_payload is _FORBIDDEN_SENTINEL:
+        return _forbidden()
     if status_payload is None:
         return JSONResponse({"error": "Unknown 'session_id' for analysis."}, status_code=404)
 
@@ -433,6 +446,8 @@ async def end_session(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     session = _owned_live_session(session_id, auth)
+    if session is _FORBIDDEN_SENTINEL:
+        return _forbidden()
     if session is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
@@ -593,6 +608,8 @@ async def process_capture(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     sess = _owned_live_session(session_id, auth)
+    if sess is _FORBIDDEN_SENTINEL:
+        return _forbidden()
     if sess is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 

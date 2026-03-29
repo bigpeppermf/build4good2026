@@ -60,6 +60,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from core.graph import SystemDesignGraph
@@ -69,7 +70,14 @@ DB_NAME = "system_design"
 
 class SessionStore:
     def __init__(self, uri: str) -> None:
-        self._client = AsyncIOMotorClient(uri)
+        # Atlas URIs use TLS; supply certifi's CA bundle so macOS Python can
+        # verify the certificate chain without relying on the system keychain.
+        use_tls = "mongodb.net" in uri or "+srv" in uri
+        self._client = (
+            AsyncIOMotorClient(uri, tlsCAFile=certifi.where())
+            if use_tls
+            else AsyncIOMotorClient(uri)
+        )
         self._db = self._client[DB_NAME]
 
     async def _save_without_transaction(
@@ -190,7 +198,7 @@ class SessionStore:
 
         session_doc = {
             "_id": session_id,
-            "user_id": user_id,
+            "user_id": user_id or "",
             "clerk_session_id": clerk_session_id,
             "created_at": now,
             "traversal_order": traversal_order,
@@ -294,7 +302,7 @@ class SessionStore:
         now = datetime.now(timezone.utc)
         analysis_doc = {
             "_id": session_id,
-            "user_id": user_id,
+            "user_id": user_id or "",
             "clerk_session_id": clerk_session_id,
             "created_at": now,
             "analysis": analysis,
