@@ -31,10 +31,10 @@ class FakeCollection:
     delete_many_calls: list[RecordedCall] = field(default_factory=list)
     insert_many_calls: list[RecordedCall] = field(default_factory=list)
     insert_one_calls: list[dict] = field(default_factory=list)
-    find_one_calls: list[dict] = field(default_factory=list)
-    find_one_result: Any = None
     count_documents_calls: list[dict] = field(default_factory=list)
     count_documents_result: int = 0
+    find_one_calls: list[dict] = field(default_factory=list)
+    find_one_result: Any = None
 
     async def replace_one(
         self,
@@ -132,6 +132,7 @@ def _make_graph() -> SystemDesignGraph:
 
 def test_save_session_persists_validation_fields_with_transaction(monkeypatch: pytest.MonkeyPatch):
     fake_db = FakeDb()
+    fake_db.frames.count_documents_result = 3
     fake_client = FakeClient(fake_db)
     monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
     store = session_store.SessionStore("mongodb://unit-test")
@@ -141,12 +142,12 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
         store.save_session(
             graph,
             "session-123",
+            user_id="user_123",
+            clerk_session_id="sess_123",
             audio_transcript="Browser sends traffic to API then DB.",
             validation_corrections=2,
             validation_summary="Added DB connection from transcript.",
             graph_confidence=0.66,
-            user_id="user_123",
-            clerk_session_id="sess_123",
         )
     )
 
@@ -157,6 +158,7 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
     assert summary["validation_corrections"] == 2
     assert summary["validation_summary"] == "Added DB connection from transcript."
     assert summary["graph_confidence"] == pytest.approx(0.66)
+    assert summary["frames_saved"] == 3
 
     assert len(fake_db.sessions.replace_one_calls) == 1
     session_write = fake_db.sessions.replace_one_calls[0]
@@ -169,6 +171,8 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
     assert session_write.payload["validation_corrections"] == 2
     assert session_write.payload["validation_summary"] == "Added DB connection from transcript."
     assert session_write.payload["graph_confidence"] == pytest.approx(0.66)
+    assert session_write.payload["frames_count"] == 3
+    assert fake_db.frames.count_documents_calls == [{"session_id": "session-123"}]
 
     assert len(fake_db.nodes.delete_many_calls) == 1
     assert fake_db.nodes.delete_many_calls[0].filter_doc == {"session_id": "session-123"}
@@ -188,6 +192,7 @@ def test_save_session_falls_back_when_transactions_are_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ):
     fake_db = FakeDb()
+    fake_db.frames.count_documents_result = 1
     fake_client = NoTransactionClient(fake_db)
     monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
     store = session_store.SessionStore("mongodb://unit-test")
@@ -198,10 +203,13 @@ def test_save_session_falls_back_when_transactions_are_unsupported(
     assert len(fake_db.sessions.replace_one_calls) == 1
     session_write = fake_db.sessions.replace_one_calls[0]
     assert session_write.session is None
+    assert session_write.payload["user_id"] == ""
     assert session_write.payload["audio_transcript"] == ""
     assert session_write.payload["validation_corrections"] == 0
     assert session_write.payload["validation_summary"] == "Graph matches transcript"
     assert session_write.payload["graph_confidence"] == 1.0
+    assert session_write.payload["frames_count"] == 1
+    assert fake_db.frames.count_documents_calls == [{"session_id": "session-no-tx"}]
 
     assert len(fake_db.nodes.delete_many_calls) == 1
     assert fake_db.nodes.delete_many_calls[0].session is None
@@ -328,3 +336,102 @@ def test_get_analysis_returns_none_for_empty_session_id(monkeypatch: pytest.Monk
 
     assert result is None
     assert fake_db.analysis.find_one_calls == []
+
+
+# ------------------------------------------------------------------ #
+# user_id persistence tests                                            #
+# ------------------------------------------------------------------ #
+
+def test_save_session_stores_user_id_in_document(monkeypatch: pytest.MonkeyPatch):
+    """user_id must be written into the sessions collection document."""
+    fake_db = FakeDb()
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    graph = _make_graph()
+    asyncio.run(store.save_session(graph, "sess-uid-1", user_id="user_alice_111"))
+
+    doc = fake_db.sessions.replace_one_calls[0].payload
+    assert doc["user_id"] == "user_alice_111"
+
+
+def test_save_session_defaults_user_id_to_empty_string(monkeypatch: pytest.MonkeyPatch):
+    """When user_id is omitted, the field must still be present but empty."""
+    fake_db = FakeDb()
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    graph = _make_graph()
+    asyncio.run(store.save_session(graph, "sess-uid-2"))
+
+    doc = fake_db.sessions.replace_one_calls[0].payload
+    assert doc["user_id"] == ""
+
+
+def test_save_analysis_stores_user_id_in_document(monkeypatch: pytest.MonkeyPatch):
+    """user_id must be written into the analysis collection document."""
+    fake_db = FakeDb()
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    asyncio.run(store.save_analysis("sess-uid-3", {}, user_id="user_bob_222"))
+
+    doc = fake_db.analysis.replace_one_calls[0].payload
+    assert doc["user_id"] == "user_bob_222"
+
+
+def test_save_analysis_defaults_user_id_to_empty_string(monkeypatch: pytest.MonkeyPatch):
+    """When user_id is omitted on save_analysis, field must still be present but empty."""
+    fake_db = FakeDb()
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    asyncio.run(store.save_analysis("sess-uid-4", {}))
+
+    doc = fake_db.analysis.replace_one_calls[0].payload
+    assert doc["user_id"] == ""
+
+
+def test_get_analysis_returns_user_id_from_stored_document(monkeypatch: pytest.MonkeyPatch):
+    """get_analysis must return the full document including user_id."""
+    fake_db = FakeDb()
+    fake_db.analysis.find_one_result = {
+        "_id": "sess-uid-5",
+        "user_id": "user_alice_111",
+        "chat_seed_context": "ctx",
+    }
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    result = asyncio.run(store.get_analysis("sess-uid-5"))
+
+    assert result["user_id"] == "user_alice_111"
+
+
+def test_different_users_sessions_store_distinct_user_ids(monkeypatch: pytest.MonkeyPatch):
+    """Two save_session calls with different user_ids must each write the correct value."""
+    fake_db_a = FakeDb()
+    fake_client_a = FakeClient(fake_db_a)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client_a)
+    store_a = session_store.SessionStore("mongodb://unit-test")
+
+    graph = _make_graph()
+    asyncio.run(store_a.save_session(graph, "sess-user-a", user_id="user_alice_111"))
+
+    fake_db_b = FakeDb()
+    fake_client_b = FakeClient(fake_db_b)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client_b)
+    store_b = session_store.SessionStore("mongodb://unit-test")
+
+    asyncio.run(store_b.save_session(graph, "sess-user-b", user_id="user_bob_222"))
+
+    doc_a = fake_db_a.sessions.replace_one_calls[0].payload
+    doc_b = fake_db_b.sessions.replace_one_calls[0].payload
+    assert doc_a["user_id"] == "user_alice_111"
+    assert doc_b["user_id"] == "user_bob_222"
+    assert doc_a["user_id"] != doc_b["user_id"]

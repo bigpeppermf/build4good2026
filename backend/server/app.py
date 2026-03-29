@@ -9,6 +9,10 @@ Endpoints:
   POST /end-session           — save the completed graph to MongoDB
   POST /chat                  — ask follow-up questions using saved analysis context
 
+All endpoints except GET /docs require a valid Clerk Bearer token in the
+Authorization header.  Sessions are scoped to the authenticated user — requests
+from a different user that happen to know a session_id will receive 403.
+
 Run:
     uv run main.py
 """
@@ -39,9 +43,19 @@ load_dotenv()
 
 _store = SessionStore(uri=os.environ["MONGODB_URI"])
 
-# Per-user session registry: session_id → {"graph": ..., "agent": ...}
+# Per-user session registry: session_id → {"graph": ..., "agent": ..., "user_id": ...}
 _sessions: dict[str, dict] = {}
 _analysis_jobs: dict[str, dict] = {}
+
+# Ownership registry: session_id → user_id.
+# Persists across the active→post-session transition so analysis_status
+# can enforce ownership after the in-memory session has been popped.
+_session_owners: dict[str, str] = {}
+
+
+# ------------------------------------------------------------------ #
+# Auth helpers                                                         #
+# ------------------------------------------------------------------ #
 
 
 def _analysis_response_payload(payload: dict | None) -> dict | None:
@@ -163,6 +177,9 @@ async def new_session(request: Request) -> JSONResponse:
     Creates a fresh graph and agent for a new user session.
     Returns a session_id that must be included in all subsequent requests.
 
+    Requires a valid Clerk Bearer token.  The session is bound to the
+    authenticated user — only that user may access or end it.
+
     The ``VisualDeltaPipeline`` (YOLO + Gemini Vision) is created lazily on
     the first ``POST /agent/process-capture`` so importing this module does
     not load heavyweight CV dependencies.
@@ -180,6 +197,7 @@ async def new_session(request: Request) -> JSONResponse:
         "user_id": auth.user_id,
         "clerk_session_id": auth.clerk_session_id,
     }
+    _session_owners[session_id] = auth.user_id
     return JSONResponse({"session_id": session_id})
 
 
@@ -196,14 +214,14 @@ async def process_frame(request: Request) -> JSONResponse:
         visual_delta  — text description of what changed on the whiteboard
         timestamp_ms  — milliseconds since session start (default: 0)
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
-
-    auth = require_auth(request)
-    if isinstance(auth, JSONResponse):
-        return auth
 
     session_id = body.get("session_id", "")
     if not session_id:
@@ -230,6 +248,7 @@ async def analysis_status(request: Request) -> JSONResponse:
     """
     GET /analysis/{session_id}
     Poll status for a post-session analysis/save job started by POST /end-session.
+    Only the session owner may poll.
     """
     auth = require_auth(request)
     if isinstance(auth, JSONResponse):
@@ -291,12 +310,12 @@ async def _run_post_session_pipeline(
         summary = await _store.save_session(
             graph,
             session_id,
+            user_id=user_id,
+            clerk_session_id=clerk_session_id,
             audio_transcript=validation_result.transcript,
             validation_corrections=validation_result.corrections_made,
             validation_summary=validation_result.validation_summary,
             graph_confidence=validation_result.graph_confidence,
-            user_id=user_id,
-            clerk_session_id=clerk_session_id,
         )
 
         current_stage = "analysis"
@@ -390,7 +409,12 @@ async def end_session(request: Request) -> JSONResponse:
       session_id - ID returned by POST /new-session
       audio      - recorded session audio blob (webm/ogg)
     Returns HTTP 202 and starts asynchronous post-session processing.
+    Only the session owner may call this endpoint.
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" not in content_type:
         return JSONResponse(
@@ -402,10 +426,6 @@ async def end_session(request: Request) -> JSONResponse:
         form = await request.form()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Could not parse form body."}, status_code=400)
-
-    auth = require_auth(request)
-    if isinstance(auth, JSONResponse):
-        return auth
 
     raw_sid = form.get("session_id")
     session_id = raw_sid if isinstance(raw_sid, str) else ""
@@ -427,7 +447,16 @@ async def end_session(request: Request) -> JSONResponse:
 
     graph = session["graph"]
     if len(graph) == 0:
-        return JSONResponse({"error": "Graph is empty - nothing to save."}, status_code=400)
+        return JSONResponse(
+            {
+                "error": (
+                    "Graph is empty — no whiteboard content was captured. "
+                    "Make sure you step away from the camera while drawing so the "
+                    "person-detection filter does not discard your frames."
+                )
+            },
+            status_code=400,
+        )
 
     # Pop before enqueueing so IDs are not reusable while processing.
     _sessions.pop(session_id)
@@ -473,15 +502,16 @@ async def chat(request: Request) -> JSONResponse:
     JSON body:
       session_id - completed session ID with saved analysis
       message    - user follow-up question
+    Only the session owner may chat about a session.
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
-
-    auth = require_auth(request)
-    if isinstance(auth, JSONResponse):
-        return auth
 
     raw_sid = body.get("session_id") if isinstance(body, dict) else None
     session_id = raw_sid.strip() if isinstance(raw_sid, str) else ""
@@ -496,6 +526,11 @@ async def chat(request: Request) -> JSONResponse:
     analysis_doc = await _store.get_analysis(session_id, user_id=auth.user_id)
     if analysis_doc is None:
         return JSONResponse({"error": "Unknown 'session_id' for chat."}, status_code=404)
+
+    # Enforce ownership: if the stored doc has a user_id, it must match the caller.
+    doc_user_id = analysis_doc.get("user_id", "")
+    if doc_user_id and doc_user_id != auth.user_id:
+        return _forbidden()
 
     seed_context_raw = analysis_doc.get("chat_seed_context")
     seed_context = seed_context_raw.strip() if isinstance(seed_context_raw, str) else ""
@@ -541,15 +576,16 @@ async def process_capture(request: Request) -> JSONResponse:
     Multipart body for the browser / CV path: JPEG frame + session_id + timestamp.
     Runs the per-session visual_delta pipeline, then the Gemini agent when a delta
     is produced (same as POST /agent/process-frame with plain-text visual_delta).
+    Only the session owner may submit frames.
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     try:
         form = await request.form()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Could not parse form body."}, status_code=400)
-
-    auth = require_auth(request)
-    if isinstance(auth, JSONResponse):
-        return auth
 
     raw_sid = form.get("session_id")
     session_id = raw_sid if isinstance(raw_sid, str) else ""
@@ -584,7 +620,8 @@ async def process_capture(request: Request) -> JSONResponse:
         return JSONResponse({"error": _pipeline_error_message(exc)}, status_code=500)
 
     if pipeline_result is None:
-        return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
+        reason = pipeline.discard_reason or "no_change"
+        return JSONResponse({"discarded": True, "reason": reason, "timestamp_ms": timestamp_ms})
 
     try:
         verbal_response = agent.process_frame(

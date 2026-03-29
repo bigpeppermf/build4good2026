@@ -9,7 +9,9 @@
       "WebFetch(domain:blog.laozhang.ai)",
       "Bash(xargs ls:*)",
       "Bash(xargs cat:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(find /c/Users/alimo/Documents/Code/build4good2026/frontend -name .env* -o -name *.env)",
+      "Bash(uv sync:*)"
     ]
   }
 }

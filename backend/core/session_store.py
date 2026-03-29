@@ -8,7 +8,7 @@ Database : system_design
 Collection: sessions
   {
     "_id":              str   (session_id),
-    "user_id":          str,
+    "user_id":          str   (Clerk user ID — owner of this session),
     "clerk_session_id": str | null,
     "created_at":       datetime,
     "traversal_order":  [str, ...],   # node IDs in BFS order
@@ -46,7 +46,7 @@ Collection: frames
 Collection: analysis
   {
     "_id":              str   (session_id),
-    "user_id":          str | null,
+    "user_id":          str   (Clerk user ID — owner of this session),
     "clerk_session_id": str | null,
     "created_at":       datetime,
     "analysis":         dict,
@@ -159,12 +159,12 @@ class SessionStore:
         graph: SystemDesignGraph,
         session_id: str,
         *,
+        user_id: str | None = None,
+        clerk_session_id: str | None = None,
         audio_transcript: str = "",
         validation_corrections: int = 0,
         validation_summary: str = "Graph matches transcript",
         graph_confidence: float = 1.0,
-        user_id: str | None = None,
-        clerk_session_id: str | None = None,
     ) -> dict:
         """
         Persist the completed graph to MongoDB.

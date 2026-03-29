@@ -195,6 +195,12 @@ const outputNote = computed(() => {
   if (!currentSessionId.value) {
     return "Open chat from a completed session to view post-session analysis. Local snapshots saved in this browser also appear here.";
   }
+  // Session upload failed — analysis never started, no point polling.
+  if (mirageSnapshot.value?.uploadOk === false) {
+    const msg =
+      mirageSnapshot.value.uploadMessage ?? "Session could not be saved to the server.";
+    return `${msg} No analysis is available for this session. Showing local device snapshot only.`;
+  }
   if (analysisStatus.value === "processing") {
     const stage = analysisStage.value ? ` (${analysisStage.value})` : "";
     if (mirageSnapshot.value) {
@@ -357,6 +363,13 @@ watch(
     loadMirageSnapshot(nextSessionId);
 
     if (nextSessionId) {
+      // Don't poll if the local snapshot already tells us the upload failed.
+      // The server never created an analysis job for this session, so polling
+      // would immediately 404 and show a confusing "unknown session" error.
+      if (mirageSnapshot.value?.uploadOk === false) {
+        stopPolling();
+        return;
+      }
       startPolling(nextSessionId);
       return;
     }

@@ -9,13 +9,14 @@ early (400/404 responses) before touching external services.
 
 import os
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
-# Force a stub key before importing server.app so post-session validation
-# never makes real Gemini API calls during this test module.
+# Force stub keys before importing server.app so no real external calls are made.
 os.environ["GOOGLE_API_KEY"] = "test-key-stub"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
+os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.test/.well-known/jwks.json")
 
 from starlette.testclient import TestClient  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
@@ -24,6 +25,10 @@ from server.app import app  # noqa: E402
 import server.app as srv  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=False)
+
+# Default user ID injected by the autouse auth patch below.
+TEST_USER_ID = "user_test_default_abc123"
+
 
 
 # ------------------------------------------------------------------ #

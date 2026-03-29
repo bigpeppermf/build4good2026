@@ -127,6 +127,7 @@ class VisualDeltaPipeline:
         self.frame_processor = frame_processor or FrameProcessor()
         self.vision_extractor = vision_extractor or GeminiVisionExtractor()
         self._last_description: str | None = None
+        self.discard_reason: str | None = None
 
     def process_frame(
         self, image: bytes | np.ndarray, timestamp: float | int
@@ -135,9 +136,15 @@ class VisualDeltaPipeline:
 
         Returns a result dict on success, or ``None`` if the frame was
         discarded (person visible, duplicate, blank board, or no change).
+        Sets ``self.discard_reason`` to one of:
+            ``"person_detected"``  — YOLO found a person in the frame
+            ``"no_change"``        — frame too similar to the last accepted one
+            ``"no_visual_change"`` — Gemini said BLANK or NO_CHANGE
         """
+        self.discard_reason = None
         accepted = self.frame_processor.process_frame(image, timestamp)
         if accepted is None:
+            self.discard_reason = self.frame_processor.discard_reason
             return None
 
         image_bytes: bytes = accepted["image"]
@@ -147,6 +154,7 @@ class VisualDeltaPipeline:
         )
 
         if visual_delta is None:
+            self.discard_reason = "no_visual_change"
             return None
 
         # Keep a rolling description for the next delta comparison.

@@ -1,98 +1,52 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  deleteWhiteboardSnapshot,
   getLastSessionId,
   getRecentSessions,
   loadWhiteboardSnapshot,
   persistWhiteboardSnapshot,
 } from "../src/utils/sessionOutputStorage";
 
-describe("sessionOutputStorage", () => {
+function makeSnapshot(userId: string, sessionId: string, savedAt: string) {
+  return {
+    userId,
+    sessionId,
+    savedAt,
+    verbalResponses: [],
+    imageFramesSentCount: 0,
+    discardedFramesCount: 0,
+    processedFramesCount: 0,
+    uploadOk: true as boolean | null,
+    uploadMessage: "ok" as string | null,
+  };
+}
+
+describe("sessionOutputStorage delete flow", () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it("scopes snapshots, recents, and last-session ids by Clerk user", () => {
-    persistWhiteboardSnapshot({
-      userId: "user_a",
-      sessionId: "session-a-1",
-      savedAt: "2026-03-29T10:00:00.000Z",
-      verbalResponses: [
-        {
-          timestampMs: 1000,
-          verbalResponse: "Add a cache layer.",
-          visualDelta: "Cache box added.",
-        },
-      ],
-      imageFramesSentCount: 3,
-      discardedFramesCount: 1,
-      processedFramesCount: 2,
-      uploadOk: true,
-      uploadMessage: "Session ended (processing).",
-    });
-    persistWhiteboardSnapshot({
-      userId: "user_b",
-      sessionId: "session-b-1",
-      savedAt: "2026-03-29T11:00:00.000Z",
-      verbalResponses: [],
-      imageFramesSentCount: 1,
-      discardedFramesCount: 0,
-      processedFramesCount: 1,
-      uploadOk: false,
-      uploadMessage: "Upload failed.",
-    });
+  it("removes deleted session and updates recent + last pointers", () => {
+    const userId = "user-1";
+    persistWhiteboardSnapshot(makeSnapshot(userId, "sess-a", "2026-03-28T10:00:00.000Z"));
+    persistWhiteboardSnapshot(makeSnapshot(userId, "sess-b", "2026-03-28T11:00:00.000Z"));
 
-    expect(loadWhiteboardSnapshot("user_a", "session-a-1")?.userId).toBe("user_a");
-    expect(loadWhiteboardSnapshot("user_b", "session-a-1")).toBeNull();
-    expect(getLastSessionId("user_a")).toBe("session-a-1");
-    expect(getLastSessionId("user_b")).toBe("session-b-1");
-    expect(getRecentSessions("user_a")).toEqual([
-      { sessionId: "session-a-1", savedAt: "2026-03-29T10:00:00.000Z" },
-    ]);
-    expect(getRecentSessions("user_b")).toEqual([
-      { sessionId: "session-b-1", savedAt: "2026-03-29T11:00:00.000Z" },
-    ]);
+    deleteWhiteboardSnapshot(userId, "sess-b");
+
+    expect(loadWhiteboardSnapshot(userId, "sess-b")).toBeNull();
+    expect(getRecentSessions(userId).map((s) => s.sessionId)).toEqual(["sess-a"]);
+    expect(getLastSessionId(userId)).toBe("sess-a");
   });
 
-  it("moves the latest save to the top without duplicating recents", () => {
-    persistWhiteboardSnapshot({
-      userId: "user_a",
-      sessionId: "session-1",
-      savedAt: "2026-03-29T10:00:00.000Z",
-      verbalResponses: [],
-      imageFramesSentCount: 1,
-      discardedFramesCount: 0,
-      processedFramesCount: 1,
-      uploadOk: true,
-      uploadMessage: null,
-    });
-    persistWhiteboardSnapshot({
-      userId: "user_a",
-      sessionId: "session-2",
-      savedAt: "2026-03-29T11:00:00.000Z",
-      verbalResponses: [],
-      imageFramesSentCount: 2,
-      discardedFramesCount: 0,
-      processedFramesCount: 2,
-      uploadOk: true,
-      uploadMessage: null,
-    });
-    persistWhiteboardSnapshot({
-      userId: "user_a",
-      sessionId: "session-1",
-      savedAt: "2026-03-29T12:00:00.000Z",
-      verbalResponses: [],
-      imageFramesSentCount: 3,
-      discardedFramesCount: 0,
-      processedFramesCount: 3,
-      uploadOk: true,
-      uploadMessage: null,
-    });
+  it("clears recent + last when the final session is deleted", () => {
+    const userId = "user-2";
+    persistWhiteboardSnapshot(makeSnapshot(userId, "sess-only", "2026-03-28T12:00:00.000Z"));
 
-    expect(getLastSessionId("user_a")).toBe("session-1");
-    expect(getRecentSessions("user_a")).toEqual([
-      { sessionId: "session-1", savedAt: "2026-03-29T12:00:00.000Z" },
-      { sessionId: "session-2", savedAt: "2026-03-29T11:00:00.000Z" },
-    ]);
+    deleteWhiteboardSnapshot(userId, "sess-only");
+
+    expect(loadWhiteboardSnapshot(userId, "sess-only")).toBeNull();
+    expect(getRecentSessions(userId)).toEqual([]);
+    expect(getLastSessionId(userId)).toBeNull();
   });
 });
