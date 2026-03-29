@@ -51,9 +51,9 @@ class TestDocsEndpoint:
         res = client.get("/docs")
         assert "API Reference" in res.text
 
-    def test_body_contains_mcp_tools_section(self):
+    def test_body_contains_graph_tools_section(self):
         res = client.get("/docs")
-        assert "MCP Tools" in res.text or "createNode" in res.text
+        assert "Graph Tools" in res.text or "create_node" in res.text
 
 
 # ------------------------------------------------------------------ #

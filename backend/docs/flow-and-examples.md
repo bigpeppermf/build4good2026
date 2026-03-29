@@ -1,6 +1,6 @@
 # Flow & Examples
 
-How the system works end-to-end, with worked examples showing real AI tool call sequences.
+How the system works end-to-end, with worked examples showing how frames become `visual_delta` text and then graph mutations.
 
 ---
 
@@ -11,8 +11,9 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 │  User draws on whiteboard                                           │
 │           │                                                         │
 │           ▼                                                         │
-│     CV Pipeline (teammate)                                          │
-│     Compares frames → produces visual_delta text description        │
+│  Frame filter + OCR + change describer                              │
+│  Receives: JPEG frame                                               │
+│  Produces: visual_delta text description                            │
 │           │                                                         │
 │           ▼  POST /agent/process-frame { session_id, visual_delta } │
 │     WhiteboardAgent (LangChain + Gemini 2.0 Flash)                  │
@@ -35,7 +36,7 @@ How the system works end-to-end, with worked examples showing real AI tool call 
 
 ---
 
-## The Three Phases
+## The Four Phases
 
 ### Phase 1 — Start session
 
@@ -45,9 +46,18 @@ and a `WhiteboardAgent` bound to it, stores both under a UUID, and returns the
 
 ### Phase 2 — Live session (in-memory only)
 
-As the user draws, the CV pipeline sends `POST /agent/process-frame` with a text
-description of each change. The agent runs a tool-call loop with Gemini: it keeps
-calling tools until Gemini stops requesting them, then returns one sentence spoken
+As the user draws, the CV pipeline processes each frame and sends `POST /agent/process-frame`
+with a `visual_delta` text description of what changed. The CV pipeline runs these steps internally:
+
+1. Decode the incoming frame
+2. Reject if a person is visible
+3. Reject if the frame is too similar to the last accepted frame
+4. Run OCR on the accepted frame — extract component labels, annotation text, and simple connections
+5. Compare the current OCR snapshot to the previous one
+6. Generate a plain-English `visual_delta` (e.g. `"A box labeled 'Redis' was drawn with an arrow from 'API'"`)
+
+The agent receives that `visual_delta` text and runs a tool-call loop with Gemini: it keeps
+calling graph tools until Gemini stops requesting them, then returns one sentence spoken
 aloud to the user. All graph mutations are instantaneous Python dict operations —
 no I/O, no network.
 
@@ -56,6 +66,10 @@ no I/O, no network.
 When the frontend calls `POST /end-session`, the server runs a BFS traversal from
 the entry point node to produce `traversal_order`, then writes two MongoDB
 collections. The session is removed from memory after saving.
+
+The `SessionStore` makes two writes:
+1. One **session document** — the skeleton (edges + traversal order)
+2. One **node document per component** — label, type, details, and `traversal_index` in the BFS walk
 
 ---
 

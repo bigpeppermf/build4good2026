@@ -3,14 +3,17 @@
 This backend currently contains two main responsibilities:
 
 - A Python MCP server for live system-design sessions
-- A frame-processing gatekeeper that filters images before expensive downstream analysis
+- A visual-delta pipeline that converts accepted frames into text updates for the agent
 
 ## Current Layout
 
 ```text
 backend/
+  agent/
+    agent.py             # LangChain + Gemini agent that consumes visual_delta text
   core/
     frame_processor.py   # Early frame filtering: decode -> person detect -> diff
+    visual_delta_pipeline.py  # OCR + connection detection + visual_delta generation
     graph.py             # In-memory system design graph
     session_store.py     # MongoDB persistence for finished sessions
   docs/
@@ -35,11 +38,12 @@ That server:
 - accepts `POST /end-session`
 - writes the finished session to MongoDB
 
-### 2. Frame gatekeeper
+### 2. Visual-delta pipeline
 
-The frame gatekeeper lives in `backend/core/frame_processor.py`.
+The visual-delta pipeline lives in `backend/core/visual_delta_pipeline.py`.
 
-Its job is to cheaply reject frames before they reach future expensive steps.
+Its job is to turn live frames into plain-English structural updates before the
+agent touches them.
 
 It follows this order:
 
@@ -48,9 +52,24 @@ It follows this order:
 3. If a person is found, discard the frame
 4. Compare against the last accepted frame using grayscale MAD diff
 5. If too similar, discard the frame
-6. Otherwise return the accepted frame and update internal state
+6. Run OCR on the accepted frame with local `tesseract`
+7. Extract components, nearby annotation text, and simple connections
+8. Compare the OCR snapshot to the previous accepted OCR snapshot
+9. Generate a plain-text `visual_delta` string
+10. Pass that `visual_delta` to the agent for graph mutations
 
-This module does not do OCR, system extraction, or graph logic.
+This means the agent no longer receives raw images directly. It receives a
+plain-English description of the visual change instead.
+
+## Visual Delta Output
+
+The pipeline generates text like:
+
+```text
+A box labeled 'Redis Cache' was drawn with an arrow from 'API Service'.
+Text '3 replicas' was added near 'API Service'.
+An arrow was drawn from 'Browser' to 'API'.
+```
 
 ## Frame Processor API
 
@@ -101,10 +120,12 @@ python backend/main.py
 
 Before running the MCP server, make sure `.env` contains a valid `MONGODB_URI`.
 
-## Dependencies Added For Frame Processing
+## Dependencies Used By The Visual Pipeline
 
 - `numpy`
 - `opencv-python`
 - `ultralytics`
+- local `tesseract` binary
 
-These are used for image decoding, resizing, diffing, and lightweight person detection.
+These are used for image decoding, resizing, diffing, person detection, OCR,
+and simple visual-structure extraction.
