@@ -17,8 +17,11 @@ const {
   uploadOk,
   uploadState,
   sessionPlaybackUrl,
-  streamWsConnected,
-  audioChunksSentCount,
+  sessionId,
+  verbalResponses,
+  ttsEnabled,
+  lastCaptureError,
+  audioChunksRecordedCount,
   imageFramesSentCount,
   sessionTimeLabel,
   startSession,
@@ -57,11 +60,12 @@ function handleClose() {
           Whiteboard capture
         </h2>
         <p class="capture-hint">
-          Setup asks for camera and microphone. Prefer the rear/environment camera on
-          a phone. Use the frame overlay to align the board. While live, the app sends
-          the full audio stream over WebSocket and a JPEG still from the camera every
-          15 seconds (not continuous video). See
-          <code class="sessions-code">readmes/STREAMING.md</code> for the wire format.
+          Setup calls the backend to create a session, then opens the camera. Each
+          still frame (every 15s) is posted to the CV pipeline; the agent’s
+          <strong class="capture-strong">verbal response</strong> appears below and can
+          be read aloud. Audio is recorded locally for replay; only HTTP API calls hit the
+          server. Stop ends the session with
+          <code class="sessions-code">POST /end-session</code>.
         </p>
 
         <div class="capture-actions">
@@ -111,6 +115,28 @@ function handleClose() {
           />
         </div>
 
+        <div
+          v-if="verbalResponses.length > 0"
+          class="verbal-panel"
+          aria-live="polite"
+        >
+          <h3 class="verbal-panel-title">
+            Agent responses
+          </h3>
+          <ol class="verbal-list">
+            <li
+              v-for="(item, idx) in verbalResponses"
+              :key="idx"
+              class="verbal-item"
+            >
+              <span class="verbal-time">{{ (item.timestampMs / 1000).toFixed(1) }}s</span>
+              <p class="verbal-text">
+                {{ item.verbalResponse }}
+              </p>
+            </li>
+          </ol>
+        </div>
+
     <!-- Fullscreen camera overlay -->
     <Teleport to="body">
       <div
@@ -139,12 +165,31 @@ function handleClose() {
           class="camera-stats"
           aria-live="polite"
         >
-          <span class="stat">Stream: {{ streamWsConnected ? "connected" : "…" }}</span>
+          <span class="stat">Session: {{ sessionId ? sessionId.slice(0, 8) + "…" : "—" }}</span>
           <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Audio chunks: {{ audioChunksSentCount }}</span>
+          <span class="stat">Audio chunks: {{ audioChunksRecordedCount }}</span>
           <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Images: {{ imageFramesSentCount }}</span>
+          <span class="stat">Frames posted: {{ imageFramesSentCount }}</span>
         </div>
+
+        <label
+          v-if="isSessionActive"
+          class="tts-toggle"
+        >
+          <input
+            v-model="ttsEnabled"
+            type="checkbox"
+          >
+          <span>Speak responses (TTS)</span>
+        </label>
+
+        <p
+          v-if="lastCaptureError && isSessionActive"
+          class="camera-capture-error"
+          role="status"
+        >
+          {{ lastCaptureError }}
+        </p>
 
         <div
           v-show="activeStream"
@@ -477,6 +522,59 @@ function handleClose() {
   font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
   line-height: 1.55;
   color: var(--ink-muted);
+}
+
+.capture-strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.verbal-panel {
+  margin-top: clamp(1rem, 3vw, 1.35rem);
+  padding: clamp(0.85rem, 2.5vw, 1rem);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-soft);
+}
+
+.verbal-panel-title {
+  margin: 0 0 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.verbal-list {
+  margin: 0;
+  padding: 0 0 0 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.verbal-item {
+  margin: 0;
+  padding: 0;
+  list-style: decimal;
+}
+
+.verbal-time {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+  margin-bottom: 0.2rem;
+}
+
+.verbal-text {
+  margin: 0;
+  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.9375rem);
+  line-height: 1.5;
+  color: var(--ink);
 }
 
 .capture-actions {
@@ -1057,6 +1155,46 @@ function handleClose() {
   color: #f7f4ee;
   background: rgb(180 60 60 / 0.92);
   border-radius: 2px;
+}
+
+.tts-toggle {
+  position: absolute;
+  bottom: clamp(4.5rem, 12vh, 6rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 106;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 2vw, 0.6875rem);
+  color: rgb(255 255 255 / 0.88);
+  background: rgb(0 0 0 / 0.45);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tts-toggle input {
+  accent-color: var(--accent, #8fbc8f);
+}
+
+.camera-capture-error {
+  position: absolute;
+  bottom: clamp(7rem, 18vh, 9rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 106;
+  max-width: min(90vw, 24rem);
+  margin: 0;
+  padding: 0.4rem 0.65rem;
+  font-size: clamp(0.75rem, 2.2vw, 0.8125rem);
+  color: #fecaca;
+  background: rgb(0 0 0 / 0.55);
+  border-radius: 4px;
+  text-align: center;
 }
 
 @media (prefers-reduced-motion: reduce) {
