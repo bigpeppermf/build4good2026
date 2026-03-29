@@ -18,8 +18,10 @@ os.environ["GOOGLE_API_KEY"] = "test-key-stub"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 
 from starlette.testclient import TestClient  # noqa: E402
+from starlette.responses import JSONResponse  # noqa: E402
 
 from server.app import app  # noqa: E402
+import server.app as srv  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -28,14 +30,47 @@ client = TestClient(app, raise_server_exceptions=False)
 # Helpers                                                              #
 # ------------------------------------------------------------------ #
 
-def create_session() -> str:
+def auth_headers(user_id: str = "user-test") -> dict[str, str]:
+    return {"Authorization": f"Bearer {user_id}"}
+
+
+@pytest.fixture(autouse=True)
+def fake_clerk_auth(monkeypatch: pytest.MonkeyPatch):
+    def _fake_require_auth(request):
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+
+        user_id = header.replace("Bearer ", "", 1).strip()
+        if not user_id:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+
+        return srv.AuthContext(
+            user_id=user_id,
+            clerk_session_id=f"sess_{user_id}",
+            payload={"sub": user_id, "sid": f"sess_{user_id}"},
+        )
+
+    monkeypatch.setattr(srv, "require_auth", _fake_require_auth)
+    srv._sessions.clear()
+    srv._analysis_jobs.clear()
+    yield
+    srv._sessions.clear()
+    srv._analysis_jobs.clear()
+
+
+def create_session(user_id: str = "user-test") -> str:
     """Create a new session and return its session_id."""
-    res = client.post("/new-session")
+    res = client.post("/new-session", headers=auth_headers(user_id))
     assert res.status_code == 200
     return res.json()["session_id"]
 
 
-def end_session_with_audio(session_id: str, audio_bytes: bytes = b"fake-audio") -> object:
+def end_session_with_audio(
+    session_id: str,
+    user_id: str = "user-test",
+    audio_bytes: bytes = b"fake-audio",
+) -> object:
     """
     Call POST /end-session using the Step 2 multipart contract.
     """
@@ -43,10 +78,15 @@ def end_session_with_audio(session_id: str, audio_bytes: bytes = b"fake-audio") 
         "/end-session",
         data={"session_id": session_id},
         files={"audio": ("session.webm", audio_bytes, "audio/webm")},
+        headers=auth_headers(user_id),
     )
 
 
-def wait_for_analysis_final(session_id: str, timeout_s: float = 1.0) -> dict:
+def wait_for_analysis_final(
+    session_id: str,
+    user_id: str = "user-test",
+    timeout_s: float = 1.0,
+) -> dict:
     """
     Poll GET /analysis/{session_id} until status becomes complete/failed.
     """
@@ -55,7 +95,7 @@ def wait_for_analysis_final(session_id: str, timeout_s: float = 1.0) -> dict:
     latest_code: int | None = None
 
     while time.time() < deadline:
-        res = client.get(f"/analysis/{session_id}")
+        res = client.get(f"/analysis/{session_id}", headers=auth_headers(user_id))
         latest_code = res.status_code
         if res.status_code == 200:
             latest_payload = res.json()
@@ -96,22 +136,29 @@ class TestDocsEndpoint:
 # ------------------------------------------------------------------ #
 
 class TestNewSessionEndpoint:
-    def test_returns_200(self):
+    def test_requires_authentication(self):
         res = client.post("/new-session")
+        assert res.status_code == 401
+
+    def test_returns_200(self):
+        res = client.post("/new-session", headers=auth_headers())
         assert res.status_code == 200
 
     def test_returns_session_id(self):
-        res = client.post("/new-session")
+        res = client.post("/new-session", headers=auth_headers())
         assert "session_id" in res.json()
         assert len(res.json()["session_id"]) > 0
 
     def test_each_call_returns_unique_session_id(self):
-        id1 = client.post("/new-session").json()["session_id"]
-        id2 = client.post("/new-session").json()["session_id"]
+        id1 = client.post("/new-session", headers=auth_headers()).json()["session_id"]
+        id2 = client.post("/new-session", headers=auth_headers()).json()["session_id"]
         assert id1 != id2
 
     def test_multiple_active_sessions_coexist(self):
-        ids = {client.post("/new-session").json()["session_id"] for _ in range(5)}
+        ids = {
+            client.post("/new-session", headers=auth_headers()).json()["session_id"]
+            for _ in range(5)
+        }
         assert len(ids) == 5
 
 
@@ -120,10 +167,18 @@ class TestNewSessionEndpoint:
 # ------------------------------------------------------------------ #
 
 class TestProcessFrameEndpoint:
+    def test_requires_authentication(self):
+        res = client.post(
+            "/agent/process-frame",
+            json={"session_id": "not-a-real-id", "visual_delta": "something"},
+        )
+        assert res.status_code == 401
+
     def test_missing_session_id_returns_404(self):
         res = client.post(
             "/agent/process-frame",
             json={"visual_delta": "something", "timestamp_ms": 100},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
         assert "session_id" in res.json()["error"].lower()
@@ -132,6 +187,7 @@ class TestProcessFrameEndpoint:
         res = client.post(
             "/agent/process-frame",
             json={"session_id": "not-a-real-id", "visual_delta": "something"},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
 
@@ -140,6 +196,7 @@ class TestProcessFrameEndpoint:
         res = client.post(
             "/agent/process-frame",
             json={"session_id": sid, "timestamp_ms": 100},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
         assert "visual_delta" in res.json()["error"].lower()
@@ -149,6 +206,7 @@ class TestProcessFrameEndpoint:
         res = client.post(
             "/agent/process-frame",
             json={"session_id": sid, "visual_delta": "   ", "timestamp_ms": 100},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
         assert "visual_delta" in res.json()["error"].lower()
@@ -169,12 +227,21 @@ class TestProcessFrameEndpoint:
 
 
 class TestProcessCaptureEndpoint:
+    def test_requires_authentication(self):
+        res = client.post(
+            "/agent/process-capture",
+            data={"session_id": "not-a-real-id", "timestamp_ms": "0"},
+            files={"frame": ("f.jpg", b"\xff\xd8\xff\xe0", "image/jpeg")},
+        )
+        assert res.status_code == 401
+
     def test_invalid_session_id_returns_404(self):
         # Multipart: text fields in ``data``, file in ``files`` (httpx/Starlette).
         res = client.post(
             "/agent/process-capture",
             data={"session_id": "not-a-real-id", "timestamp_ms": "0"},
             files={"frame": ("f.jpg", b"\xff\xd8\xff\xe0", "image/jpeg")},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
         assert "session_id" in res.json()["error"].lower()
@@ -184,6 +251,7 @@ class TestProcessCaptureEndpoint:
         res = client.post(
             "/agent/process-capture",
             data={"session_id": sid, "timestamp_ms": "0"},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
         assert "frame" in res.json()["error"].lower()
@@ -194,8 +262,57 @@ class TestProcessCaptureEndpoint:
             "/agent/process-capture",
             data={"session_id": sid, "timestamp_ms": "0"},
             files={"frame": ("empty.jpg", b"", "image/jpeg")},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
+
+    def test_successful_capture_persists_frame_with_user_ownership(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import server.app as srv
+
+        sid = create_session(user_id="owner-user")
+        srv._sessions[sid]["pipeline"] = MagicMock()
+        srv._sessions[sid]["pipeline"].process_frame.return_value = {
+            "visual_delta": "API box added",
+        }
+        srv._sessions[sid]["agent"].process_frame = MagicMock(
+            return_value="Added the API service to the graph."
+        )
+
+        with patch.object(srv._store, "save_frame", AsyncMock()) as mock_save_frame:
+            res = client.post(
+                "/agent/process-capture",
+                data={"session_id": sid, "timestamp_ms": "1500"},
+                files={"frame": ("frame.jpg", b"\xff\xd8\xff\xe0", "image/jpeg")},
+                headers=auth_headers("owner-user"),
+            )
+
+        assert res.status_code == 200
+        assert res.json() == {
+            "verbal_response": "Added the API service to the graph.",
+            "visual_delta": "API box added",
+            "timestamp_ms": 1500,
+        }
+        mock_save_frame.assert_awaited_once_with(
+            session_id=sid,
+            timestamp_ms=1500,
+            visual_delta="API box added",
+            verbal_response="Added the API service to the graph.",
+            user_id="owner-user",
+            clerk_session_id="sess_owner-user",
+        )
+
+    def test_other_user_cannot_process_another_users_capture(self):
+        sid = create_session(user_id="owner-user")
+
+        res = client.post(
+            "/agent/process-capture",
+            data={"session_id": sid, "timestamp_ms": "1500"},
+            files={"frame": ("frame.jpg", b"\xff\xd8\xff\xe0", "image/jpeg")},
+            headers=auth_headers("other-user"),
+        )
+
+        assert res.status_code == 404
 
 
 # ------------------------------------------------------------------ #
@@ -203,11 +320,20 @@ class TestProcessCaptureEndpoint:
 # ------------------------------------------------------------------ #
 
 class TestEndSessionEndpoint:
+    def test_requires_authentication(self):
+        res = client.post(
+            "/end-session",
+            data={"session_id": "not-a-real-id"},
+            files={"audio": ("session.webm", b"audio", "audio/webm")},
+        )
+        assert res.status_code == 401
+
     def test_missing_session_id_returns_404(self):
         res = client.post(
             "/end-session",
             data={},
             files={"audio": ("session.webm", b"audio", "audio/webm")},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
 
@@ -229,6 +355,7 @@ class TestEndSessionEndpoint:
             "/end-session",
             data={"session_id": sid},
             files={"placeholder": ("placeholder.txt", b"x", "text/plain")},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
         assert "audio" in res.json()["error"].lower()
@@ -239,6 +366,7 @@ class TestEndSessionEndpoint:
             "/end-session",
             data={"session_id": sid},
             files={"audio": ("session.webm", b"", "audio/webm")},
+            headers=auth_headers(),
         )
         assert res.status_code == 400
         assert "empty audio" in res.json()["error"].lower()
@@ -255,8 +383,12 @@ class TestEndSessionEndpoint:
 # ------------------------------------------------------------------ #
 
 class TestAnalysisStatusEndpoint:
-    def test_unknown_session_id_returns_404(self):
+    def test_requires_authentication(self):
         res = client.get("/analysis/not-a-real-id")
+        assert res.status_code == 401
+
+    def test_unknown_session_id_returns_404(self):
+        res = client.get("/analysis/not-a-real-id", headers=auth_headers())
         assert res.status_code == 404
 
     def test_polling_eventually_reaches_complete(self):
@@ -342,6 +474,8 @@ class TestAnalysisStatusEndpoint:
             mock_save.await_args.kwargs["graph_confidence"]
             == expected_validation.graph_confidence
         )
+        assert mock_save.await_args.kwargs["user_id"] == "user-test"
+        assert mock_save.await_args.kwargs["clerk_session_id"] == "sess_user-test"
 
     def test_complete_payload_includes_analysis_output(self):
         from unittest.mock import AsyncMock, patch
@@ -432,10 +566,39 @@ class TestAnalysisStatusEndpoint:
         assert payload["feedback"] == expected_analysis["feedback"]
         assert payload["score"] == expected_analysis["score"]
         assert payload["analysis_summary"]["analysis_saved"] is True
-        mock_save_analysis.assert_awaited_once_with(sid, expected_analysis)
+        mock_save_analysis.assert_awaited_once_with(
+            sid,
+            expected_analysis,
+            user_id="user-test",
+            clerk_session_id="sess_user-test",
+        )
         assert FakeAnalysisAgent.seen_transcripts[-1] == expected_validation.transcript
         assert FakeAnalysisAgent.seen_metadata[-1]["session_id"] == sid
         assert FakeAnalysisAgent.seen_metadata[-1]["nodes_saved"] == 2
+
+    def test_other_user_cannot_poll_another_users_job(self):
+        from unittest.mock import AsyncMock, patch
+
+        sid = create_session(user_id="owner-user")
+        srv._sessions[sid]["graph"].create_node("svc", "Service", "service")
+
+        mock_save = AsyncMock(return_value={
+            "session_id": sid,
+            "nodes_saved": 1,
+            "edges_saved": 0,
+            "traversal_order": ["svc"],
+        })
+        mock_save_analysis = AsyncMock(return_value={"session_id": sid, "analysis_saved": True})
+        with (
+            patch.object(srv._store, "save_session", mock_save),
+            patch.object(srv._store, "save_analysis", mock_save_analysis),
+        ):
+            res = end_session_with_audio(sid, user_id="owner-user")
+            assert res.status_code == 202
+            wait_for_analysis_final(sid, user_id="owner-user")
+
+        foreign = client.get(f"/analysis/{sid}", headers=auth_headers("other-user"))
+        assert foreign.status_code == 404
 
 
 # ------------------------------------------------------------------ #
@@ -443,6 +606,13 @@ class TestAnalysisStatusEndpoint:
 # ------------------------------------------------------------------ #
 
 class TestChatEndpoint:
+    def test_requires_authentication(self):
+        res = client.post(
+            "/chat",
+            json={"session_id": "abc123", "message": "hello"},
+        )
+        assert res.status_code == 401
+
     def test_non_json_body_returns_400(self):
         res = client.post(
             "/chat",
@@ -453,12 +623,20 @@ class TestChatEndpoint:
         assert "json" in res.json()["error"].lower()
 
     def test_missing_session_id_returns_400(self):
-        res = client.post("/chat", json={"message": "How do I improve scalability?"})
+        res = client.post(
+            "/chat",
+            json={"message": "How do I improve scalability?"},
+            headers=auth_headers(),
+        )
         assert res.status_code == 400
         assert "session_id" in res.json()["error"].lower()
 
     def test_missing_message_returns_400(self):
-        res = client.post("/chat", json={"session_id": "abc123"})
+        res = client.post(
+            "/chat",
+            json={"session_id": "abc123"},
+            headers=auth_headers(),
+        )
         assert res.status_code == 400
         assert "message" in res.json()["error"].lower()
 
@@ -473,6 +651,7 @@ class TestChatEndpoint:
                     "session_id": "missing-session",
                     "message": "Why did reliability score drop?",
                 },
+                headers=auth_headers(),
             )
 
         assert res.status_code == 404
@@ -512,6 +691,7 @@ class TestChatEndpoint:
                     "session_id": "session-chat",
                     "message": "How do I improve scalability?",
                 },
+                headers=auth_headers(),
             )
 
         assert res.status_code == 200
@@ -521,12 +701,50 @@ class TestChatEndpoint:
         assert FakeChatAgent.seen_context[-1] == "Session session-chat analysis context."
         assert FakeChatAgent.seen_messages[-1] == "How do I improve scalability?"
 
+    def test_other_user_cannot_chat_on_another_users_session(self):
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            srv._store,
+            "get_analysis",
+            AsyncMock(return_value=None),
+        ) as mocked_get_analysis:
+            res = client.post(
+                "/chat",
+                json={
+                    "session_id": "session-chat",
+                    "message": "How do I improve scalability?",
+                },
+                headers=auth_headers("other-user"),
+            )
+
+        assert res.status_code == 404
+        mocked_get_analysis.assert_awaited_once_with(
+            "session-chat",
+            user_id="other-user",
+        )
+
 
 # ------------------------------------------------------------------ #
 # Session isolation                                                    #
 # ------------------------------------------------------------------ #
 
 class TestSessionIsolation:
+    def test_other_user_cannot_mutate_live_session(self):
+        sid = create_session(user_id="owner-user")
+
+        res = client.post(
+            "/agent/process-frame",
+            json={
+                "session_id": sid,
+                "visual_delta": "API box drawn",
+                "timestamp_ms": 1000,
+            },
+            headers=auth_headers("other-user"),
+        )
+
+        assert res.status_code == 404
+
     def test_two_sessions_have_independent_graphs(self):
         from unittest.mock import MagicMock
         from langchain_core.messages import AIMessage
@@ -552,6 +770,7 @@ class TestSessionIsolation:
             res = client.post(
                 "/agent/process-frame",
                 json={"session_id": sid1, "visual_delta": "API box drawn", "timestamp_ms": 1000},
+                headers=auth_headers(),
             )
             assert res.status_code == 200
 
@@ -609,6 +828,7 @@ class TestSessionIsolation:
         res = client.post(
             "/agent/process-frame",
             json={"session_id": sid, "visual_delta": "something"},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
 
@@ -714,6 +934,7 @@ class TestSessionCleanup:
         res = client.post(
             "/agent/process-frame",
             json={"session_id": sid, "visual_delta": "something"},
+            headers=auth_headers(),
         )
         assert res.status_code == 404
 
@@ -799,6 +1020,7 @@ class TestEndToEnd:
                     "visual_delta": "Browser and API boxes drawn with an arrow between them.",
                     "timestamp_ms": 1000,
                 },
+                headers=auth_headers(),
             )
             assert res1.status_code == 200, res1.text
             assert res1.json()["verbal_response"] == "Got it — browser connects to API."
@@ -815,6 +1037,7 @@ class TestEndToEnd:
                     "visual_delta": "Browser box is circled, indicating it is the entry point.",
                     "timestamp_ms": 3000,
                 },
+                headers=auth_headers(),
             )
             assert res2.status_code == 200
             assert srv._sessions[sid]["graph"].get_state()["entry_point"] == "browser"

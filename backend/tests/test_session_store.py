@@ -30,8 +30,11 @@ class FakeCollection:
     replace_one_calls: list[RecordedCall] = field(default_factory=list)
     delete_many_calls: list[RecordedCall] = field(default_factory=list)
     insert_many_calls: list[RecordedCall] = field(default_factory=list)
+    insert_one_calls: list[dict] = field(default_factory=list)
     find_one_calls: list[dict] = field(default_factory=list)
     find_one_result: Any = None
+    count_documents_calls: list[dict] = field(default_factory=list)
+    count_documents_result: int = 0
 
     async def replace_one(
         self,
@@ -55,15 +58,23 @@ class FakeCollection:
             RecordedCall(filter_doc={}, payload=documents, session=session)
         )
 
+    async def insert_one(self, document: dict) -> None:
+        self.insert_one_calls.append(document)
+
     async def find_one(self, filter_doc: dict) -> Any:
         self.find_one_calls.append(filter_doc)
         return self.find_one_result
+
+    async def count_documents(self, filter_doc: dict) -> int:
+        self.count_documents_calls.append(filter_doc)
+        return self.count_documents_result
 
 
 @dataclass
 class FakeDb:
     sessions: FakeCollection = field(default_factory=FakeCollection)
     nodes: FakeCollection = field(default_factory=FakeCollection)
+    frames: FakeCollection = field(default_factory=FakeCollection)
     analysis: FakeCollection = field(default_factory=FakeCollection)
 
 
@@ -134,6 +145,8 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
             validation_corrections=2,
             validation_summary="Added DB connection from transcript.",
             graph_confidence=0.66,
+            user_id="user_123",
+            clerk_session_id="sess_123",
         )
     )
 
@@ -150,6 +163,8 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
     assert session_write.filter_doc == {"_id": "session-123"}
     assert session_write.upsert is True
     assert session_write.session is fake_client.last_session
+    assert session_write.payload["user_id"] == "user_123"
+    assert session_write.payload["clerk_session_id"] == "sess_123"
     assert session_write.payload["audio_transcript"] == "Browser sends traffic to API then DB."
     assert session_write.payload["validation_corrections"] == 2
     assert session_write.payload["validation_summary"] == "Added DB connection from transcript."
@@ -164,6 +179,9 @@ def test_save_session_persists_validation_fields_with_transaction(monkeypatch: p
     assert node_write.session is fake_client.last_session
     node_ids = {doc["node_id"] for doc in node_write.payload}
     assert node_ids == {"client", "api", "db"}
+    assert all(doc["user_id"] == "user_123" for doc in node_write.payload)
+    assert all(doc["clerk_session_id"] == "sess_123" for doc in node_write.payload)
+    assert fake_db.frames.count_documents_calls == [{"session_id": "session-123"}]
 
 
 def test_save_session_falls_back_when_transactions_are_unsupported(
@@ -211,7 +229,14 @@ def test_save_analysis_persists_analysis_document(monkeypatch: pytest.MonkeyPatc
             "grade": "B",
         },
     }
-    result = asyncio.run(store.save_analysis("session-ana-1", analysis_output))
+    result = asyncio.run(
+        store.save_analysis(
+            "session-ana-1",
+            analysis_output,
+            user_id="user_ana",
+            clerk_session_id="sess_ana",
+        )
+    )
 
     assert result["session_id"] == "session-ana-1"
     assert result["analysis_saved"] is True
@@ -222,6 +247,8 @@ def test_save_analysis_persists_analysis_document(monkeypatch: pytest.MonkeyPatc
     assert analysis_write.filter_doc == {"_id": "session-ana-1"}
     assert analysis_write.upsert is True
     doc = analysis_write.payload
+    assert doc["user_id"] == "user_ana"
+    assert doc["clerk_session_id"] == "sess_ana"
     assert doc["analysis"]["architecture_pattern"] == "3-tier web architecture"
     assert doc["feedback"]["strengths"] == ["Layering is clear."]
     assert doc["score"]["total"] == 78
@@ -250,6 +277,34 @@ def test_save_analysis_accepts_invalid_payload(monkeypatch: pytest.MonkeyPatch):
     assert "session-ana-2" in doc["chat_seed_context"]
 
 
+def test_save_frame_persists_user_and_clerk_session(monkeypatch: pytest.MonkeyPatch):
+    fake_db = FakeDb()
+    fake_client = FakeClient(fake_db)
+    monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
+    store = session_store.SessionStore("mongodb://unit-test")
+
+    asyncio.run(
+        store.save_frame(
+            "session-frame-1",
+            15_000,
+            "API node added",
+            "Noted the API service.",
+            user_id="user_frame",
+            clerk_session_id="sess_frame",
+        )
+    )
+
+    assert len(fake_db.frames.insert_one_calls) == 1
+    frame_doc = fake_db.frames.insert_one_calls[0]
+    assert frame_doc["session_id"] == "session-frame-1"
+    assert frame_doc["user_id"] == "user_frame"
+    assert frame_doc["clerk_session_id"] == "sess_frame"
+    assert frame_doc["timestamp_ms"] == 15_000
+    assert frame_doc["visual_delta"] == "API node added"
+    assert frame_doc["verbal_response"] == "Noted the API service."
+    assert frame_doc["created_at"] is not None
+
+
 def test_get_analysis_returns_doc(monkeypatch: pytest.MonkeyPatch):
     fake_db = FakeDb()
     fake_db.analysis.find_one_result = {"_id": "session-ana-3", "chat_seed_context": "ctx"}
@@ -257,10 +312,10 @@ def test_get_analysis_returns_doc(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(session_store, "AsyncIOMotorClient", lambda _uri: fake_client)
     store = session_store.SessionStore("mongodb://unit-test")
 
-    result = asyncio.run(store.get_analysis("session-ana-3"))
+    result = asyncio.run(store.get_analysis("session-ana-3", user_id="user-3"))
 
     assert result == {"_id": "session-ana-3", "chat_seed_context": "ctx"}
-    assert fake_db.analysis.find_one_calls == [{"_id": "session-ana-3"}]
+    assert fake_db.analysis.find_one_calls == [{"_id": "session-ana-3", "user_id": "user-3"}]
 
 
 def test_get_analysis_returns_none_for_empty_session_id(monkeypatch: pytest.MonkeyPatch):

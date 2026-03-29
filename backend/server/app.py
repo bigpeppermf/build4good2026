@@ -29,6 +29,7 @@ from starlette.routing import Route
 from agent import AnalysisAgent, ChatAgent, ValidationAgent, WhiteboardAgent
 from core.graph import SystemDesignGraph
 from core.session_store import SessionStore
+from server.auth import AuthContext, require_auth
 
 load_dotenv()
 
@@ -41,6 +42,34 @@ _store = SessionStore(uri=os.environ["MONGODB_URI"])
 # Per-user session registry: session_id → {"graph": ..., "agent": ...}
 _sessions: dict[str, dict] = {}
 _analysis_jobs: dict[str, dict] = {}
+
+
+def _analysis_response_payload(payload: dict | None) -> dict | None:
+    if payload is None:
+        return None
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in {"user_id", "clerk_session_id"}
+    }
+
+
+def _owned_live_session(session_id: str, auth: AuthContext) -> dict | None:
+    session = _sessions.get(session_id)
+    if session is None:
+        return None
+    if session.get("user_id") != auth.user_id:
+        return None
+    return session
+
+
+def _owned_analysis_job(session_id: str, auth: AuthContext) -> dict | None:
+    payload = _analysis_jobs.get(session_id)
+    if payload is None:
+        return None
+    if payload.get("user_id") != auth.user_id:
+        return None
+    return payload
 
 
 # ------------------------------------------------------------------ #
@@ -128,7 +157,7 @@ async def serve_docs(_request: Request) -> HTMLResponse:
     return HTMLResponse(html)
 
 
-async def new_session(_request: Request) -> JSONResponse:
+async def new_session(request: Request) -> JSONResponse:
     """
     POST /new-session
     Creates a fresh graph and agent for a new user session.
@@ -138,10 +167,19 @@ async def new_session(_request: Request) -> JSONResponse:
     the first ``POST /agent/process-capture`` so importing this module does
     not load heavyweight CV dependencies.
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     session_id = str(uuid.uuid4())
     graph = SystemDesignGraph()
     agent = WhiteboardAgent(graph)
-    _sessions[session_id] = {"graph": graph, "agent": agent}
+    _sessions[session_id] = {
+        "graph": graph,
+        "agent": agent,
+        "user_id": auth.user_id,
+        "clerk_session_id": auth.clerk_session_id,
+    }
     return JSONResponse({"session_id": session_id})
 
 
@@ -163,8 +201,16 @@ async def process_frame(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
 
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     session_id = body.get("session_id", "")
-    if not session_id or session_id not in _sessions:
+    if not session_id:
+        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    session = _owned_live_session(session_id, auth)
+    if session is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     visual_delta = body.get("visual_delta", "")
@@ -174,7 +220,7 @@ async def process_frame(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Missing or empty 'visual_delta' field."}, status_code=400)
 
     try:
-        verbal_response = _sessions[session_id]["agent"].process_frame(visual_delta, timestamp_ms)
+        verbal_response = session["agent"].process_frame(visual_delta, timestamp_ms)
         return JSONResponse({"verbal_response": verbal_response, "timestamp_ms": timestamp_ms})
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -185,15 +231,19 @@ async def analysis_status(request: Request) -> JSONResponse:
     GET /analysis/{session_id}
     Poll status for a post-session analysis/save job started by POST /end-session.
     """
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     session_id = request.path_params.get("session_id", "")
     if not session_id:
         return JSONResponse({"error": "Missing 'session_id' path parameter."}, status_code=400)
 
-    status_payload = _analysis_jobs.get(session_id)
+    status_payload = _owned_analysis_job(session_id, auth)
     if status_payload is None:
         return JSONResponse({"error": "Unknown 'session_id' for analysis."}, status_code=404)
 
-    return JSONResponse(status_payload)
+    return JSONResponse(_analysis_response_payload(status_payload))
 
 
 async def _run_post_session_pipeline(
@@ -201,6 +251,9 @@ async def _run_post_session_pipeline(
     graph: SystemDesignGraph,
     audio_bytes: bytes,
     audio_mime_type: str,
+    *,
+    user_id: str,
+    clerk_session_id: str | None,
 ) -> None:
     """
     Post-session pipeline:
@@ -214,6 +267,8 @@ async def _run_post_session_pipeline(
     try:
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "processing",
             "stage": "validation",
         }
@@ -224,6 +279,8 @@ async def _run_post_session_pipeline(
         current_stage = "saving_session"
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "processing",
             "stage": "saving_session",
             "validation_summary": validation_result.validation_summary,
@@ -238,11 +295,15 @@ async def _run_post_session_pipeline(
             validation_corrections=validation_result.corrections_made,
             validation_summary=validation_result.validation_summary,
             graph_confidence=validation_result.graph_confidence,
+            user_id=user_id,
+            clerk_session_id=clerk_session_id,
         )
 
         current_stage = "analysis"
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "processing",
             "stage": "analysis",
             "validation_summary": validation_result.validation_summary,
@@ -268,16 +329,25 @@ async def _run_post_session_pipeline(
         current_stage = "saving_analysis"
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "processing",
             "stage": "saving_analysis",
             "validation_summary": validation_result.validation_summary,
             "validation_corrections": validation_result.corrections_made,
             "graph_confidence": validation_result.graph_confidence,
         }
-        analysis_save_summary = await _store.save_analysis(session_id, analysis_output)
+        analysis_save_summary = await _store.save_analysis(
+            session_id,
+            analysis_output,
+            user_id=user_id,
+            clerk_session_id=clerk_session_id,
+        )
 
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "complete",
             "stage": "complete",
             "session_summary": summary,
@@ -304,6 +374,8 @@ async def _run_post_session_pipeline(
     except Exception as exc:  # noqa: BLE001
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "status": "failed",
             "stage": current_stage,
             "error": f"Post-session pipeline failed: {exc}",
@@ -331,9 +403,17 @@ async def end_session(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Could not parse form body."}, status_code=400)
 
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     raw_sid = form.get("session_id")
     session_id = raw_sid if isinstance(raw_sid, str) else ""
-    if not session_id or session_id not in _sessions:
+    if not session_id:
+        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    session = _owned_live_session(session_id, auth)
+    if session is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     audio_upload = form.get("audio")
@@ -345,7 +425,7 @@ async def end_session(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Empty audio upload."}, status_code=400)
     audio_mime_type = audio_upload.content_type or "audio/webm"
 
-    graph = _sessions[session_id]["graph"]
+    graph = session["graph"]
     if len(graph) == 0:
         return JSONResponse({"error": "Graph is empty - nothing to save."}, status_code=400)
 
@@ -353,6 +433,8 @@ async def end_session(request: Request) -> JSONResponse:
     _sessions.pop(session_id)
     _analysis_jobs[session_id] = {
         "session_id": session_id,
+        "user_id": auth.user_id,
+        "clerk_session_id": auth.clerk_session_id,
         "status": "processing",
         "stage": "queued",
     }
@@ -364,11 +446,15 @@ async def end_session(request: Request) -> JSONResponse:
                 graph,
                 audio_bytes,
                 audio_mime_type,
+                user_id=auth.user_id,
+                clerk_session_id=auth.clerk_session_id,
             )
         )
     except Exception as exc:  # noqa: BLE001
         _analysis_jobs[session_id] = {
             "session_id": session_id,
+            "user_id": auth.user_id,
+            "clerk_session_id": auth.clerk_session_id,
             "status": "failed",
             "stage": "queued",
             "error": f"Failed to start post-session processing: {exc}",
@@ -393,6 +479,10 @@ async def chat(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
 
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     raw_sid = body.get("session_id") if isinstance(body, dict) else None
     session_id = raw_sid.strip() if isinstance(raw_sid, str) else ""
     if not session_id:
@@ -403,7 +493,7 @@ async def chat(request: Request) -> JSONResponse:
     if not message:
         return JSONResponse({"error": "Missing or empty 'message'."}, status_code=400)
 
-    analysis_doc = await _store.get_analysis(session_id)
+    analysis_doc = await _store.get_analysis(session_id, user_id=auth.user_id)
     if analysis_doc is None:
         return JSONResponse({"error": "Unknown 'session_id' for chat."}, status_code=404)
 
@@ -457,9 +547,17 @@ async def process_capture(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Could not parse form body."}, status_code=400)
 
+    auth = require_auth(request)
+    if isinstance(auth, JSONResponse):
+        return auth
+
     raw_sid = form.get("session_id")
     session_id = raw_sid if isinstance(raw_sid, str) else ""
-    if not session_id or session_id not in _sessions:
+    if not session_id:
+        return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    sess = _owned_live_session(session_id, auth)
+    if sess is None:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
     raw_ts = form.get("timestamp_ms", "0")
@@ -473,7 +571,6 @@ async def process_capture(request: Request) -> JSONResponse:
     if not frame_bytes:
         return JSONResponse({"error": "Empty frame."}, status_code=400)
 
-    sess = _sessions[session_id]
     if "pipeline" not in sess:
         from core.visual_delta_pipeline import VisualDeltaPipeline
 
@@ -504,6 +601,8 @@ async def process_capture(request: Request) -> JSONResponse:
             timestamp_ms=timestamp_ms,
             visual_delta=pipeline_result["visual_delta"],
             verbal_response=verbal_response,
+            user_id=auth.user_id,
+            clerk_session_id=auth.clerk_session_id,
         )
     except Exception:  # noqa: BLE001
         pass  # Non-critical — don't fail the response if the write fails.

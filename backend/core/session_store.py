@@ -8,6 +8,8 @@ Database : system_design
 Collection: sessions
   {
     "_id":              str   (session_id),
+    "user_id":          str,
+    "clerk_session_id": str | null,
     "created_at":       datetime,
     "traversal_order":  [str, ...],   # node IDs in BFS order
     "edges":            [{"from": str, "to": str, "label": str}, ...],
@@ -20,6 +22,8 @@ Collection: sessions
 Collection: nodes
   {
     "session_id":       str,
+    "user_id":          str | null,
+    "clerk_session_id": str | null,
     "node_id":          str,
     "label":            str,
     "type":             str,
@@ -31,6 +35,8 @@ Collection: nodes
 Collection: frames
   {
     "session_id":       str,
+    "user_id":          str | null,
+    "clerk_session_id": str | null,
     "timestamp_ms":     int,
     "visual_delta":     str,
     "verbal_response":  str,
@@ -40,6 +46,8 @@ Collection: frames
 Collection: analysis
   {
     "_id":              str   (session_id),
+    "user_id":          str | null,
+    "clerk_session_id": str | null,
     "created_at":       datetime,
     "analysis":         dict,
     "feedback":         dict,
@@ -129,11 +137,16 @@ class SessionStore:
         timestamp_ms: int,
         visual_delta: str,
         verbal_response: str,
+        *,
+        user_id: str | None = None,
+        clerk_session_id: str | None = None,
     ) -> None:
         """Persist a single processed frame result for a session."""
         await self._db.frames.insert_one(
             {
                 "session_id": session_id,
+                "user_id": user_id,
+                "clerk_session_id": clerk_session_id,
                 "timestamp_ms": timestamp_ms,
                 "visual_delta": visual_delta,
                 "verbal_response": verbal_response,
@@ -150,6 +163,8 @@ class SessionStore:
         validation_corrections: int = 0,
         validation_summary: str = "Graph matches transcript",
         graph_confidence: float = 1.0,
+        user_id: str | None = None,
+        clerk_session_id: str | None = None,
     ) -> dict:
         """
         Persist the completed graph to MongoDB.
@@ -175,6 +190,8 @@ class SessionStore:
 
         session_doc = {
             "_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "created_at": now,
             "traversal_order": traversal_order,
             "edges": state["edges"],
@@ -187,6 +204,8 @@ class SessionStore:
         node_docs = [
             {
                 "session_id": session_id,
+                "user_id": user_id,
+                "clerk_session_id": clerk_session_id,
                 "node_id": n["id"],
                 "label": n["label"],
                 "type": n["type"],
@@ -250,7 +269,14 @@ class SessionStore:
             lines.append(f"Top improvement: {top_improvement}")
         return " ".join(lines)
 
-    async def save_analysis(self, session_id: str, analysis_output: dict) -> dict:
+    async def save_analysis(
+        self,
+        session_id: str,
+        analysis_output: dict,
+        *,
+        user_id: str | None = None,
+        clerk_session_id: str | None = None,
+    ) -> dict:
         """
         Persist post-session analysis output to the analysis collection.
         """
@@ -268,6 +294,8 @@ class SessionStore:
         now = datetime.now(timezone.utc)
         analysis_doc = {
             "_id": session_id,
+            "user_id": user_id,
+            "clerk_session_id": clerk_session_id,
             "created_at": now,
             "analysis": analysis,
             "feedback": feedback,
@@ -282,13 +310,21 @@ class SessionStore:
             "score_total": score.get("total"),
         }
 
-    async def get_analysis(self, session_id: str) -> dict | None:
+    async def get_analysis(
+        self,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict | None:
         """
         Load a stored analysis document for chat follow-up.
         """
         if not session_id:
             return None
-        doc = await self._db.analysis.find_one({"_id": session_id})
+        filter_doc: dict[str, str] = {"_id": session_id}
+        if user_id:
+            filter_doc["user_id"] = user_id
+        doc = await self._db.analysis.find_one(filter_doc)
         return doc if isinstance(doc, dict) else None
 
     async def close(self) -> None:
