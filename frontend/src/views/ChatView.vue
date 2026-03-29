@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+
+import { apiUrl } from "../utils/apiUrl";
+import {
+  getLastSessionId,
+  loadWhiteboardSnapshot,
+  type WhiteboardSessionSnapshot,
+} from "../utils/sessionOutputStorage";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -8,10 +16,18 @@ interface ChatMessage {
   streaming: boolean;
 }
 
+const route = useRoute();
+const router = useRouter();
+
 const messages = ref<ChatMessage[]>([]);
 const input = ref("");
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
+
+const mirageSnapshot = ref<WhiteboardSessionSnapshot | null>(null);
+
+/** Backend session for follow-up chat messages (separate from ended whiteboard session). */
+const chatSessionId = ref<string | null>(null);
 
 function scrollToBottom() {
   nextTick(() => {
@@ -27,7 +43,6 @@ function streamText(msgIndex: number, fullText: string) {
 
   const interval = setInterval(() => {
     if (i < chars.length) {
-      // batch a few characters per tick for natural speed
       const end = Math.min(i + 3, chars.length);
       messages.value[msgIndex].displayedText += chars.slice(i, end).join("");
       i = end;
@@ -40,32 +55,157 @@ function streamText(msgIndex: number, fullText: string) {
   }, 30);
 }
 
-function sendMessage() {
+function loadMirageFromRoute() {
+  const q = route.query.session;
+  const sid = typeof q === "string" && q.length > 0 ? q : "";
+  mirageSnapshot.value = sid ? loadWhiteboardSnapshot(sid) : null;
+}
+
+onMounted(() => {
+  if (!route.query.session) {
+    const last = getLastSessionId();
+    if (last) {
+      void router.replace({ name: "chat", query: { session: last } });
+      return;
+    }
+  }
+  loadMirageFromRoute();
+});
+
+watch(
+  () => route.query.session,
+  () => loadMirageFromRoute(),
+);
+
+const sessionLabel = computed(() => {
+  const q = route.query.session;
+  return typeof q === "string" && q.length > 0 ? q : null;
+});
+
+const analysisDisplay = computed(() => {
+  const s = mirageSnapshot.value;
+  if (!s) {
+    if (!sessionLabel.value) {
+      return "Run a live session on the Dashboard, then tap Stop — graph deltas from each processed still appear here.";
+    }
+    return "No snapshot in this browser for that session id. Stop a session on this device to save output, or storage may have been cleared.";
+  }
+  const deltas = s.verbalResponses
+    .map((v) => v.visualDelta)
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+  if (deltas.length === 0) {
+    return "No visual delta text was returned for this session (frames may have been discarded or the pipeline produced no diff).";
+  }
+  return deltas.join("\n\n—\n\n");
+});
+
+const feedbackDisplay = computed(() => {
+  const s = mirageSnapshot.value;
+  if (!s) {
+    if (!sessionLabel.value) {
+      return "Coach replies from the agent appear here after each processed still.";
+    }
+    return "No snapshot in this browser for that session id. Stop a session on this device to save coach replies.";
+  }
+  const verbals = s.verbalResponses
+    .map((v) => v.verbalResponse)
+    .filter((t) => t.trim().length > 0);
+  if (verbals.length === 0) {
+    return "No coach reply text captured yet for this snapshot.";
+  }
+  return verbals.join("\n\n—\n\n");
+});
+
+const scoreDisplay = computed(() => {
+  const s = mirageSnapshot.value;
+  if (!s) {
+    if (!sessionLabel.value) {
+      return "Stills processed, discard rate, and save status show here.";
+    }
+    return "No local snapshot — stats are recorded when you tap Stop on the Dashboard from this browser.";
+  }
+  const parts = [
+    `Stills uploaded (HTTP ok): ${s.imageFramesSentCount}`,
+    `Discarded (no change): ${s.discardedFramesCount}`,
+    `Processed with reply: ${s.processedFramesCount}`,
+  ];
+  if (s.uploadMessage) {
+    parts.push(s.uploadMessage);
+  } else if (s.uploadOk === false) {
+    parts.push("Session end reported an error.");
+  }
+  return parts.join("\n");
+});
+
+async function sendMessage() {
   const text = input.value.trim();
   if (!text || isStreaming.value) return;
 
-  messages.value.push(reactive({
-    role: "user",
-    text,
-    displayedText: text,
-    streaming: false,
-  }));
+  messages.value.push(
+    reactive({
+      role: "user",
+      text,
+      displayedText: text,
+      streaming: false,
+    }),
+  );
   input.value = "";
   scrollToBottom();
 
-  // TODO: replace with real backend call
   isStreaming.value = true;
-  setTimeout(() => {
-    const response = "This is a placeholder response. Once the backend is connected, real AI responses will stream in here word by word, just like this animation shows.";
-    messages.value.push(reactive({
-      role: "assistant",
-      text: response,
-      displayedText: "",
-      streaming: true,
-    }));
+  try {
+    if (!chatSessionId.value) {
+      const nsRes = await fetch(apiUrl("/new-session"), { method: "POST" });
+      const nsJson = (await nsRes.json()) as { session_id?: string };
+      if (!nsRes.ok || !nsJson.session_id) {
+        throw new Error(
+          "Could not start a server session (is the API running on port 8000?)",
+        );
+      }
+      chatSessionId.value = nsJson.session_id;
+    }
+
+    const res = await fetch(apiUrl("/agent/process-frame"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: chatSessionId.value,
+        visual_delta: text,
+        timestamp_ms: Date.now(),
+      }),
+    });
+    const data = (await res.json()) as { verbal_response?: string; error?: string };
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === "string" ? data.error : `Request failed (${res.status})`,
+      );
+    }
+    const response =
+      typeof data.verbal_response === "string" ? data.verbal_response : "";
+    const idx = messages.value.length;
+    messages.value.push(
+      reactive({
+        role: "assistant",
+        text: response,
+        displayedText: "",
+        streaming: true,
+      }),
+    );
     scrollToBottom();
-    streamText(messages.value.length - 1, response);
-  }, 500);
+    streamText(idx, response);
+  } catch (e) {
+    isStreaming.value = false;
+    const err = e instanceof Error ? e.message : "Something went wrong.";
+    messages.value.push(
+      reactive({
+        role: "assistant",
+        text: err,
+        displayedText: err,
+        streaming: false,
+      }),
+    );
+    scrollToBottom();
+  }
 }
 </script>
 
@@ -76,21 +216,40 @@ function sendMessage() {
         Mirage
       </h2>
 
+      <p
+        v-if="sessionLabel"
+        class="output-session-id"
+      >
+        Session <span class="output-session-mono">{{ sessionLabel }}</span>
+      </p>
+
       <div class="output-body">
         <div class="output-block">
-          <p class="output-label">Analysis</p>
-          <p class="output-placeholder">—</p>
+          <p class="output-label">
+            Analysis
+          </p>
+          <p class="output-value">
+            {{ analysisDisplay }}
+          </p>
         </div>
         <div class="output-block">
-          <p class="output-label">Feedback</p>
-          <p class="output-placeholder">—</p>
+          <p class="output-label">
+            Feedback
+          </p>
+          <p class="output-value">
+            {{ feedbackDisplay }}
+          </p>
         </div>
         <div class="output-block">
-          <p class="output-label">Score</p>
-          <p class="output-placeholder">—</p>
+          <p class="output-label">
+            Session stats
+          </p>
+          <p class="output-value output-value--pre">
+            {{ scoreDisplay }}
+          </p>
         </div>
         <p class="output-note">
-          Output will appear here once the backend is connected.
+          Left: snapshot from your last Dashboard session (this browser). Right: live messages call the API (new session per visit).
         </p>
       </div>
     </section>
@@ -104,7 +263,7 @@ function sendMessage() {
 
       <div ref="messagesEl" class="chat-messages">
         <p v-if="messages.length === 0" class="chat-empty">
-          No messages yet. Start a conversation.
+          Type below to send text to the agent (<code class="chat-empty-code">POST /agent/process-frame</code>). This does not use the whiteboard snapshot on the left.
         </p>
         <div
           v-for="(msg, i) in messages"
@@ -126,7 +285,7 @@ function sendMessage() {
           v-model="input"
           class="chat-input"
           type="text"
-          placeholder="Message…"
+          aria-label="Message to agent"
           :disabled="isStreaming"
           autocomplete="off"
         />
@@ -142,7 +301,6 @@ function sendMessage() {
 .chat-page {
   width: 100%;
   min-height: calc(100dvh - 2 * var(--page-pad-y, 1.25rem));
-  /* Bleed into `<main>` padding so the two columns use the full content area */
   margin: calc(-1 * var(--page-pad-y, 1.25rem)) calc(-1 * var(--page-pad-x, 1rem));
   padding: var(--page-pad-y, 1.25rem) var(--page-pad-x, 1rem);
   display: flex;
@@ -161,7 +319,21 @@ function sendMessage() {
   flex-direction: column;
 }
 
-/* Same shimmer motion as `.hero-brand` on HomeView, at column title size */
+.output-session-id {
+  margin: 0 0 0.5rem;
+  padding: 0 0.25rem 0 0;
+  font-family: var(--font-sans);
+  font-size: clamp(0.6875rem, 0.65rem + 0.1vw, 0.75rem);
+  color: var(--ink-muted);
+  word-break: break-all;
+}
+
+.output-session-mono {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  color: var(--ink);
+}
+
 @keyframes side-heading-shine {
   0%,
   100% {
@@ -230,8 +402,6 @@ function sendMessage() {
   opacity: 0.85;
 }
 
-/* ── Chat column ── */
-
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -251,6 +421,13 @@ function sendMessage() {
   font-weight: 500;
   color: var(--ink-muted);
   text-align: center;
+  line-height: 1.55;
+  max-width: 28rem;
+}
+
+.chat-empty-code {
+  font-size: 0.9em;
+  color: var(--ink);
 }
 
 .chat-bubble {
@@ -386,8 +563,6 @@ function sendMessage() {
   outline-offset: 2px;
 }
 
-/* ── Output column ── */
-
 .output-body {
   flex: 1;
   overflow-y: auto;
@@ -416,13 +591,18 @@ function sendMessage() {
   color: var(--ink-muted);
 }
 
-.output-placeholder {
+.output-value {
   margin: 0;
   font-family: var(--font-mono);
   font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
   font-weight: 500;
   line-height: 1.5;
-  color: var(--ink-faint);
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.output-value--pre {
+  white-space: pre-line;
 }
 
 .output-note {
@@ -434,6 +614,7 @@ function sendMessage() {
   letter-spacing: 0.08em;
   color: var(--ink-faint);
   text-align: left;
+  line-height: 1.45;
 }
 
 @media (max-width: 768px) {
@@ -442,7 +623,6 @@ function sendMessage() {
     min-height: calc(100dvh - 2 * var(--page-pad-y, 1.25rem));
   }
 
-  /* Keep chat above the fold on small screens (DOM order is AI | chat) */
   .output-side {
     order: 3;
     flex: 1;

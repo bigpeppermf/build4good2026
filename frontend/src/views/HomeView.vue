@@ -74,8 +74,8 @@ import { RouterLink } from "vue-router";
 <style scoped>
 .hero {
   position: relative;
-  overflow-x: hidden;
-  overflow-y: visible;
+  /* Single page scroll: clip spill from watermark / brand so the viewport doesn’t get a second bar */
+  overflow: clip;
   width: 100%;
   max-width: 100%;
   min-height: 100vh;
@@ -160,7 +160,7 @@ import { RouterLink } from "vue-router";
   line-height: 1.08;
   text-align: center;
   transform: translateY(-0.35rem);
-  overflow: visible;
+  overflow: clip;
   /* Orange-only shimmer on the letters (same hue family as --pop) */
   background: linear-gradient(
     100deg,

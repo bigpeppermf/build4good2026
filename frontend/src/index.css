@@ -94,6 +94,7 @@
 
 html {
   overflow-x: clip;
+  overflow-y: auto;
 }
 
 body {
@@ -101,6 +102,7 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: clip;
+  overflow-y: visible;
   background-color: var(--bg-page);
 }
 

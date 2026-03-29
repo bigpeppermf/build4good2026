@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, ref } from "vue";
+import { RouterLink, useRouter } from "vue-router";
 import {
   useWhiteboardSession,
   type FrameCropNorm,
 } from "../composables/useWhiteboardSession";
+import {
+  getRecentSessions,
+  persistWhiteboardSnapshot,
+} from "../utils/sessionOutputStorage";
 const {
   videoRef,
   activeStream,
@@ -19,6 +23,12 @@ const {
   verbalResponses,
   lastCaptureError,
   lastCaptureProcessStatus,
+  lastCaptureActivity,
+  captureInFlight,
+  sessionId,
+  imageFramesSentCount,
+  discardedFramesCount,
+  processedFramesCount,
   sessionTimeLabel,
   openCameraSetup,
   beginSession,
@@ -27,6 +37,30 @@ const {
 
 const router = useRouter();
 const cameraOpen = ref(false);
+
+const recentSessionsList = ref(getRecentSessions());
+
+onMounted(() => {
+  recentSessionsList.value = getRecentSessions();
+});
+
+function formatSavedAt(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function shortSessionId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
 
 const previewRef = ref<HTMLElement | null>(null);
 
@@ -53,6 +87,16 @@ const frameStyle = computed(() => ({
 }));
 
 const captureFrameAria = computed(() => {
+  if (isSessionActive.value) {
+    switch (lastCaptureProcessStatus.value) {
+      case "success":
+        return "Crop frame is locked while live. Last still was processed successfully.";
+      case "error":
+        return "Crop frame is locked while live. Last still failed to process.";
+      default:
+        return "Crop frame is locked while the session is live.";
+    }
+  }
   switch (lastCaptureProcessStatus.value) {
     case "success":
       return "Crop frame. Last still was processed successfully.";
@@ -84,6 +128,9 @@ function normFromEvent(e: PointerEvent, el: HTMLElement) {
 }
 
 function startDrag(kind: DragKind, e: PointerEvent) {
+  if (isSessionActive.value) {
+    return;
+  }
   if (!previewRef.value) {
     return;
   }
@@ -103,6 +150,10 @@ function startDrag(kind: DragKind, e: PointerEvent) {
 }
 
 function onDragMove(e: PointerEvent) {
+  if (isSessionActive.value) {
+    onDragEnd();
+    return;
+  }
   if (!dragState.value || !previewRef.value) {
     return;
   }
@@ -175,15 +226,30 @@ function handleStartSession() {
   void beginSession();
 }
 
-function handleClose() {
-  stopSession();
+async function handleClose() {
+  const sid = sessionId.value;
+  await stopSession();
+  if (sid) {
+    persistWhiteboardSnapshot({
+      sessionId: sid,
+      savedAt: new Date().toISOString(),
+      verbalResponses: verbalResponses.value.map((v) => ({
+        timestampMs: v.timestampMs,
+        verbalResponse: v.verbalResponse,
+        visualDelta: v.visualDelta,
+      })),
+      imageFramesSentCount: imageFramesSentCount.value,
+      discardedFramesCount: discardedFramesCount.value,
+      processedFramesCount: processedFramesCount.value,
+      uploadOk: uploadOk.value,
+      uploadMessage: uploadMessage.value,
+    });
+  }
+  recentSessionsList.value = getRecentSessions();
   cameraOpen.value = false;
-}
-
-function goToPlaceholderChat() {
   void router.push({
     name: "chat",
-    query: { session: "placeholder-1" },
+    query: sid ? { session: sid } : {},
   });
 }
 </script>
@@ -297,6 +363,14 @@ function goToPlaceholderChat() {
           {{ lastCaptureError }}
         </p>
 
+        <p
+          v-if="isSessionActive && lastCaptureActivity"
+          class="camera-session-status"
+          role="status"
+        >
+          {{ lastCaptureActivity }}
+        </p>
+
         <div
           v-show="activeStream"
           ref="previewRef"
@@ -316,6 +390,7 @@ function goToPlaceholderChat() {
             <div
               class="frame-crop-box"
               :class="{
+                'frame-crop-box--locked': isSessionActive,
                 'frame-crop-box--process-ok': lastCaptureProcessStatus === 'success',
                 'frame-crop-box--process-err': lastCaptureProcessStatus === 'error',
               }"
@@ -404,6 +479,17 @@ function goToPlaceholderChat() {
             <div class="timer-chip">
               {{ sessionTimeLabel }}
             </div>
+            <div
+              v-if="captureInFlight"
+              class="camera-working-pill"
+              aria-live="polite"
+            >
+              <span
+                class="camera-working-dot"
+                aria-hidden="true"
+              />
+              Processing still…
+            </div>
           </div>
         </div>
 
@@ -438,18 +524,38 @@ function goToPlaceholderChat() {
           id="recent-sessions-title"
           class="recent-sessions-title"
         >
-          Recent sessions
+          Saved in this browser
         </h2>
-        <p class="recent-sessions-placeholder">
-          No saved sessions yet — this is a placeholder until history is wired up.
-        </p>
-        <button
-          type="button"
-          class="btn-recent-chat"
-          @click="goToPlaceholderChat"
+        <p
+          v-if="recentSessionsList.length === 0"
+          class="recent-sessions-empty"
         >
-          Open placeholder chat
-        </button>
+          When you stop a live session, coach output and stats are stored here. Open Chat to review the snapshot.
+        </p>
+        <ul
+          v-else
+          class="recent-sessions-list"
+        >
+          <li
+            v-for="row in recentSessionsList"
+            :key="row.sessionId"
+            class="recent-sessions-item"
+          >
+            <RouterLink
+              class="recent-sessions-link"
+              :to="{ name: 'chat', query: { session: row.sessionId } }"
+            >
+              <span class="recent-sessions-id">{{ shortSessionId(row.sessionId) }}</span>
+              <span class="recent-sessions-time">{{ formatSavedAt(row.savedAt) }}</span>
+            </RouterLink>
+          </li>
+        </ul>
+        <RouterLink
+          :to="{ name: 'chat' }"
+          class="btn-recent-chat"
+        >
+          Open Chat
+        </RouterLink>
       </section>
       </div>
 
@@ -557,11 +663,59 @@ function goToPlaceholderChat() {
   letter-spacing: -0.02em;
 }
 
-.recent-sessions-placeholder {
+.recent-sessions-empty {
   margin: 0 auto 1rem;
   max-width: 100%;
   font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
   line-height: 1.55;
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.recent-sessions-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  width: 100%;
+  max-width: 22rem;
+  text-align: left;
+}
+
+.recent-sessions-item {
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid rgb(224 112 86 / 0.2);
+}
+
+.recent-sessions-item:last-child {
+  border-bottom: none;
+}
+
+.recent-sessions-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.55rem 0.15rem;
+  text-decoration: none;
+  color: inherit;
+  transition: color 0.15s ease;
+}
+
+.recent-sessions-link:hover {
+  color: var(--pop);
+}
+
+.recent-sessions-id {
+  font-family: var(--font-mono);
+  font-size: clamp(0.75rem, 0.72rem + 0.1vw, 0.8125rem);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.recent-sessions-time {
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 0.6rem + 0.1vw, 0.6875rem);
+  font-weight: var(--font-mono-weight);
   color: var(--ink-muted);
 }
 
@@ -577,11 +731,13 @@ function goToPlaceholderChat() {
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+  text-decoration: none;
   color: var(--ink);
   background: var(--surface-faint);
   border: 1px dashed rgb(224 112 86 / 0.65);
   border-radius: 4px;
   cursor: pointer;
+  box-sizing: border-box;
   transition:
     border-color 0.2s ease,
     background 0.2s ease,
@@ -1075,6 +1231,12 @@ function goToPlaceholderChat() {
   transition: border-color 0.35s ease;
 }
 
+.camera-overlay .frame-crop-box.frame-crop-box--locked {
+  pointer-events: none;
+  touch-action: auto;
+  cursor: default;
+}
+
 .camera-overlay .frame-crop-box.frame-crop-box--process-ok {
   border-color: rgb(74 222 128 / 0.95);
 }
@@ -1257,6 +1419,54 @@ function goToPlaceholderChat() {
   text-shadow: 0 1px 3px rgb(0 0 0 / 0.65);
 }
 
+.camera-overlay .camera-working-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.65rem;
+  font-size: clamp(0.6875rem, 2vw, 0.8125rem);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #ecfdf5;
+  background: rgb(16 185 129 / 0.35);
+  border: 1px solid rgb(52 211 153 / 0.55);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.5);
+}
+
+.camera-overlay .camera-working-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 0 rgb(52 211 153 / 0.55);
+  animation: camera-working-pulse 1.1s ease-out infinite;
+}
+
+@keyframes camera-working-pulse {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(52 211 153 / 0.55);
+  }
+  70% {
+    opacity: 0.85;
+    box-shadow: 0 0 0 6px rgb(52 211 153 / 0);
+  }
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(52 211 153 / 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-overlay .camera-working-dot {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 .camera-capture-error {
   position: absolute;
   bottom: clamp(7rem, 18vh, 9rem);
@@ -1269,6 +1479,23 @@ function goToPlaceholderChat() {
   font-size: clamp(0.75rem, 2.2vw, 0.8125rem);
   color: #fecaca;
   background: rgb(0 0 0 / 0.55);
+  border-radius: 4px;
+  text-align: center;
+}
+
+.camera-session-status {
+  position: absolute;
+  bottom: clamp(9.25rem, 22vh, 11rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 105;
+  max-width: min(94vw, 28rem);
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  font-size: clamp(0.6875rem, 1.9vw, 0.75rem);
+  line-height: 1.35;
+  color: #d1fae5;
+  background: rgb(0 0 0 / 0.5);
   border-radius: 4px;
   text-align: center;
 }

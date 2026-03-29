@@ -24,6 +24,7 @@ import AppNav from "./components/AppNav.vue";
 .main {
   flex: 1;
   min-width: 0;
+  overflow-x: clip;
   margin-left: var(--sidebar-width, 13rem);
   padding-left: var(--page-pad-x);
   padding-right: var(--page-pad-x);

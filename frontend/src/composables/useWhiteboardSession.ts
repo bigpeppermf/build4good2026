@@ -2,7 +2,10 @@ import { computed, nextTick, onUnmounted, ref, shallowRef } from "vue";
 
 import { apiUrl } from "../utils/apiUrl";
 
-/** Still frames from the webcam (not video stream). */
+/** Still frames from the webcam (not video stream).
+ *  Each accepted frame is analysed by Gemini Vision on the backend and
+ *  the result (visual_delta + verbal_response) is stored in MongoDB
+ *  against the session ID automatically. */
 const IMAGE_INTERVAL_MS = 15_000;
 
 const JPEG_QUALITY = 0.82;
@@ -134,6 +137,14 @@ export function useWhiteboardSession() {
   const lastCaptureProcessStatus = ref<"idle" | "success" | "error">("idle");
 
   const imageFramesSentCount = ref(0);
+  const discardedFramesCount = ref(0);
+  const processedFramesCount = ref(0);
+
+  /** One-line status for the overlay (counts + last outcome). */
+  const lastCaptureActivity = ref<string | null>(null);
+
+  /** True while a still is uploading / waiting for the server (visual proof of activity). */
+  const captureInFlight = ref(false);
 
   const sessionElapsedMs = ref(0);
   let sessionTimerId: ReturnType<typeof setInterval> | null = null;
@@ -203,6 +214,7 @@ export function useWhiteboardSession() {
       lastCaptureError.value =
         "Could not read pixels for this frame (camera may still be starting).";
       lastCaptureProcessStatus.value = "error";
+      lastCaptureActivity.value = "Could not read frame from camera";
       return;
     }
     imageSeq += 1;
@@ -215,6 +227,7 @@ export function useWhiteboardSession() {
     form.append("frame", blob, "frame.jpg");
 
     try {
+      captureInFlight.value = true;
       const res = await fetch(apiUrl("/agent/process-capture"), {
         method: "POST",
         body: form,
@@ -226,16 +239,23 @@ export function useWhiteboardSession() {
           typeof data.error === "string" ? data.error : `Capture failed (${res.status})`;
         lastCaptureError.value = err;
         lastCaptureProcessStatus.value = "error";
+        lastCaptureActivity.value =
+          imageFramesSentCount.value > 0
+            ? `Last upload failed · ${imageFramesSentCount.value} successful stills before this`
+            : "Last upload failed";
         return;
       }
 
       imageFramesSentCount.value += 1;
 
       if (data.discarded === true) {
+        discardedFramesCount.value += 1;
+        lastCaptureActivity.value = `Stills uploaded: ${imageFramesSentCount.value} · ${discardedFramesCount.value} discarded · ${processedFramesCount.value} with coach reply · Last: discarded (no change)`;
         lastCaptureProcessStatus.value = "success";
         return;
       }
 
+      processedFramesCount.value += 1;
       const verbal =
         typeof data.verbal_response === "string" ? data.verbal_response : "";
       const vd =
@@ -252,10 +272,19 @@ export function useWhiteboardSession() {
         ];
       }
 
+      lastCaptureActivity.value = verbal
+        ? `Stills uploaded: ${imageFramesSentCount.value} · ${discardedFramesCount.value} discarded · ${processedFramesCount.value} with coach reply · Last: coach reply`
+        : `Stills uploaded: ${imageFramesSentCount.value} · ${discardedFramesCount.value} discarded · ${processedFramesCount.value} processed · Last: processed (no reply text)`;
       lastCaptureProcessStatus.value = "success";
     } catch {
       lastCaptureError.value = "Network error while uploading frame.";
       lastCaptureProcessStatus.value = "error";
+      lastCaptureActivity.value =
+        imageFramesSentCount.value > 0
+          ? `Network error · ${imageFramesSentCount.value} stills uploaded before this`
+          : "Network error while uploading";
+    } finally {
+      captureInFlight.value = false;
     }
   }
 
@@ -263,6 +292,7 @@ export function useWhiteboardSession() {
     const sid = sessionId.value;
     isSessionActive.value = false;
     isBeginningSession.value = false;
+    captureInFlight.value = false;
     stopTimersAndIntervals();
     lastCaptureProcessStatus.value = "idle";
 
@@ -313,9 +343,13 @@ export function useWhiteboardSession() {
     uploadState.value = "idle";
     lastCaptureError.value = null;
     lastCaptureProcessStatus.value = "idle";
+    lastCaptureActivity.value = null;
+    captureInFlight.value = false;
     verbalResponses.value = [];
     imageSeq = 0;
     imageFramesSentCount.value = 0;
+    discardedFramesCount.value = 0;
+    processedFramesCount.value = 0;
     sessionId.value = null;
     frameCropNorm.value = defaultFrameCrop();
     stopTimersAndIntervals();
@@ -380,9 +414,13 @@ export function useWhiteboardSession() {
     errorMessage.value = null;
     lastCaptureError.value = null;
     lastCaptureProcessStatus.value = "idle";
+    lastCaptureActivity.value =
+      "Live — sending first still now, then every 15s…";
     verbalResponses.value = [];
     imageSeq = 0;
     imageFramesSentCount.value = 0;
+    discardedFramesCount.value = 0;
+    processedFramesCount.value = 0;
     sessionElapsedMs.value = 0;
     stopTimersAndIntervals();
 
@@ -403,6 +441,7 @@ export function useWhiteboardSession() {
       isSessionActive.value = true;
       startSessionTimer();
       startImageInterval();
+      void captureAndSendImage();
     } catch (e) {
       sessionId.value = null;
       isSessionActive.value = false;
@@ -415,8 +454,8 @@ export function useWhiteboardSession() {
     }
   }
 
-  function stopSession() {
-    void finalizeSession();
+  async function stopSession() {
+    await finalizeSession();
   }
 
   onUnmounted(() => {
@@ -442,7 +481,11 @@ export function useWhiteboardSession() {
     verbalResponses,
     lastCaptureError,
     lastCaptureProcessStatus,
+    lastCaptureActivity,
+    captureInFlight,
     imageFramesSentCount,
+    discardedFramesCount,
+    processedFramesCount,
     sessionElapsedMs,
     sessionTimeLabel,
     openCameraSetup,

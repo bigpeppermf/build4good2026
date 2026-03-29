@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Clerk auth will be wired here — this is a placeholder
+import { RouterLink } from "vue-router";
 </script>
 
 <template>
@@ -12,41 +12,15 @@
         Welcome back
       </h1>
       <p class="login-lead">
-        Sign in to access your practice sessions and feedback.
+        Account sign-in is not configured in this build. Use the app from the sidebar: Dashboard for capture, Chat for snapshots and agent messages.
       </p>
-
-      <!-- Clerk auth component will replace this block -->
-      <div class="login-placeholder">
-        <div class="field">
-          <label class="field-label" for="email">Email</label>
-          <input
-            id="email"
-            class="field-input"
-            type="email"
-            placeholder="you@example.com"
-            disabled
-          />
-        </div>
-        <div class="field">
-          <label class="field-label" for="password">Password</label>
-          <input
-            id="password"
-            class="field-input"
-            type="password"
-            placeholder="********"
-            disabled
-          />
-        </div>
-        <button
-          type="button"
-          class="btn-login"
-          disabled
+      <div class="login-actions">
+        <RouterLink
+          :to="{ name: 'dashboard' }"
+          class="btn-dashboard"
         >
-          Sign in
-        </button>
-        <p class="login-note">
-          Clerk auth placeholder — inputs are disabled until integration.
-        </p>
+          Go to Dashboard
+        </RouterLink>
       </div>
     </div>
   </div>
@@ -100,93 +74,44 @@
   font-size: clamp(0.9375rem, 0.9rem + 0.25vw, 1.0625rem);
   line-height: 1.6;
   color: var(--ink-muted);
+  text-wrap: pretty;
 }
 
-.login-placeholder {
+.login-actions {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  text-align: left;
+  align-items: center;
+  gap: 0.75rem;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.field-label {
-  font-family: var(--font-mono);
-  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
-  font-weight: var(--font-mono-weight);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.field-input {
+.btn-dashboard {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 2.75rem;
-  padding: 0.55rem 0.75rem;
+  padding: 0.55rem 1.35rem;
   font-family: var(--font-sans);
-  font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
-  color: var(--ink);
-  background: var(--surface-faint);
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  outline: none;
-  transition: border-color 0.15s ease;
-}
-
-.field-input:focus {
-  border-color: var(--accent);
-}
-
-.field-input:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn-login {
-  min-height: 2.75rem;
-  padding: 0.55rem 1.15rem;
-  font-family: var(--font-sans);
-  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
   color: var(--void);
   background: var(--ink);
   border: 1px solid var(--btn-ink-border);
   border-radius: 4px;
-  cursor: pointer;
+  text-decoration: none;
   transition:
     background 0.15s ease,
     border-color 0.15s ease;
 }
 
-.btn-login:hover:not(:disabled) {
+.btn-dashboard:hover {
   background: var(--btn-ink-bg-hover);
   border-color: var(--btn-ink-border-hover);
 }
 
-.btn-login:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn-login:focus-visible {
+.btn-dashboard:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-.login-note {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: clamp(0.5625rem, 0.55rem + 0.1vw, 0.625rem);
-  font-weight: var(--font-mono-weight);
-  letter-spacing: 0.08em;
-  color: var(--ink-faint);
-  text-align: center;
 }
 
 @media (max-width: 480px) {

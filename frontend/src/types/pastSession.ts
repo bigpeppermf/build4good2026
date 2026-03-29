@@ -10,12 +10,10 @@ export type PastSessionSummary = {
   recordedAt?: string;
   /**
    * Server-side analysis payload (scores, motion summary, model output, etc.).
-   * Replace the placeholder body with a real presenter component once the schema is fixed.
    */
   analysis?: unknown;
   /**
    * Coach-style feedback, rubric results, or similar.
-   * Same idea: swap the slot for a typed UI when ready.
    */
   feedback?: unknown;
 };
