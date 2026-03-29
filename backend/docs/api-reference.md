@@ -6,14 +6,14 @@ Complete reference for all graph tools, HTTP endpoints, and core classes in the 
 
 ## Overview
 
-This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — the backend filters and OCRs accepted frames, generates a plain-English `visual_delta`, and the Gemini agent uses that text to build a graph of the design. When the session ends, the graph is persisted to MongoDB for scoring and comparison.
+This backend supports a real-time system design analysis tool. A user draws components on a whiteboard — the backend filters accepted frames via YOLO (person detection + dedup), analyses them with **Gemini Vision API** to generate a plain-English `visual_delta`, and the Gemini agent uses that text to build a graph of the design. Each processed frame is persisted to MongoDB in real time. When the session ends, the graph is also persisted to MongoDB for scoring and comparison.
 
 ### Surfaces
 
 | Surface | Caller | Purpose |
 |---------|--------|---------|
 | `POST /new-session` | Frontend | Create an isolated graph + agent for a user |
-| `POST /agent/process-capture` | Frontend | Upload a raw JPEG frame; backend runs the visual-delta pipeline and calls the agent |
+| `POST /agent/process-capture` | Frontend | Upload a raw JPEG frame; backend runs the Gemini Vision pipeline and calls the agent |
 | `POST /agent/process-frame` | CV pipeline (internal) | Send a pre-computed visual_delta text directly to the Gemini agent |
 | `POST /end-session` | Frontend | Persist the completed graph to MongoDB |
 | `GET /docs` | Browser | View this API reference |
@@ -36,10 +36,10 @@ backend/
     __init__.py              # Exports WhiteboardAgent
     agent.py                 # LangChain + Gemini agent that consumes visual_delta text
   core/
-    frame_processor.py       # Frame gating: person filter + diff filter
+    frame_processor.py       # Frame gating: person filter + diff filter (YOLO)
     graph.py                 # SystemDesignGraph — in-memory graph data structure
-    session_store.py         # SessionStore — MongoDB write logic
-    visual_delta_pipeline.py # OCR + connection detection + visual_delta generation
+    session_store.py         # SessionStore — MongoDB write logic (sessions, nodes, frames)
+    visual_delta_pipeline.py # Gemini Vision analysis + visual_delta generation
   server/
     app.py                   # Starlette HTTP server + all endpoints
   main.py                    # Entry point
@@ -65,13 +65,12 @@ uv run main.py
 When the frontend POSTs a raw JPEG frame to `/agent/process-capture`, the backend runs these steps:
 
 1. Decode the frame
-2. Reject if a person is visible
+2. Reject if a person is visible (YOLO)
 3. Reject if the frame is too similar to the last accepted frame
-4. Run OCR on the accepted frame
-5. Extract component text, nearby annotation text, and simple connections
-6. Compare against the previous accepted OCR snapshot
-7. Generate a plain-English `visual_delta`
-8. Pass that `visual_delta` to the Gemini agent (same logic as `/agent/process-frame`)
+4. Send the accepted frame to **Gemini Vision API** with the previous frame's description as context
+5. Gemini returns a plain-English `visual_delta` describing what changed
+6. Pass that `visual_delta` to the Gemini agent (same logic as `/agent/process-frame`)
+7. Persist the frame data (visual_delta, verbal_response, timestamp) to MongoDB
 
 Frames that are rejected return `{ "discarded": true }` immediately.
 
@@ -265,12 +264,12 @@ Atomically insert a new node between two already-connected nodes. The existing e
 | `new_label` | `str` | Yes | Display label for the new node. |
 | `new_type` | `str` | Yes | Component type for the new node. |
 | `to_id` | `str` | Yes | ID of the downstream node. |
-| `from_label` | `str` | No | Label for the new edge `from_id → new_id`. Defaults to `""`. |
-| `to_label` | `str` | No | Label for the new edge `new_id → to_id`. Defaults to `""`. |
+| `from_label` | `str` | No | Label for the new edge `from_id -> new_id`. Defaults to `""`. |
+| `to_label` | `str` | No | Label for the new edge `new_id -> to_id`. Defaults to `""`. |
 
-**Before:** `frontend ──▶ database`
+**Before:** `frontend --> database`
 
-**After `insert_node_between("frontend", "api", "API", "service", "database")`:** `frontend ──▶ api ──▶ database`
+**After `insert_node_between("frontend", "api", "API", "service", "database")`:** `frontend --> api --> database`
 
 **Returns**
 ```json
@@ -331,7 +330,7 @@ Creates a fresh `SystemDesignGraph` and `WhiteboardAgent` for a new user. Return
 
 ### `POST /agent/process-capture`
 
-Called by the **frontend** every 15 seconds with a raw JPEG still from the camera. The backend runs the full visual-delta pipeline on the frame and, if the frame is accepted, calls the Gemini agent and returns a verbal response.
+Called by the **frontend** every 15 seconds with a raw JPEG still from the camera. The backend runs the Gemini Vision pipeline on the frame and, if the frame is accepted, calls the Gemini agent and returns a verbal response. Each processed frame is also persisted to the `frames` collection in MongoDB.
 
 **Request:** `multipart/form-data`
 
@@ -345,13 +344,14 @@ Called by the **frontend** every 15 seconds with a raw JPEG still from the camer
 ```json
 {
   "verbal_response": "Got it — I've added the Load Balancer and connected it to the API service.",
-  "visual_delta": "A box labeled 'Load Balancer' was drawn with an arrow to 'API Service'."
+  "visual_delta": "A box labeled 'Load Balancer' was drawn with an arrow to 'API Service'.",
+  "timestamp_ms": 15000
 }
 ```
 
 **Response (200) — frame discarded** (person detected or frame too similar to last accepted)
 ```json
-{ "discarded": true }
+{ "discarded": true, "timestamp_ms": 15000 }
 ```
 
 **Response (404)** — unknown session
@@ -417,41 +417,6 @@ Lower-level endpoint used when the `visual_delta` text has already been computed
 
 ---
 
-### `POST /agent/process-capture`
-
-Used by the **browser** (or any client that has raw JPEG bytes). Runs the per-session **visual delta pipeline** (frame filter → OCR → `visual_delta` text), then passes that text to the same agent as `POST /agent/process-frame`. The CV stack is **lazy-loaded** on first use so `POST /new-session` stays lightweight.
-
-**Request:** `multipart/form-data`
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `session_id` | `string` | Yes | ID returned by `POST /new-session`. |
-| `timestamp_ms` | `string` | No | Milliseconds since session start (form field; default `0`). |
-| `frame` | file | Yes | JPEG image bytes. |
-
-**Response (200)** — frame accepted and a delta was produced
-```json
-{
-  "verbal_response": "Got it — I've added the API box.",
-  "visual_delta": "A box labeled 'API' was drawn.",
-  "labels": ["API"],
-  "annotations": [],
-  "connections": [],
-  "timestamp_ms": 15000
-}
-```
-
-**Response (200)** — frame discarded by the pipeline (no change to describe)
-```json
-{ "discarded": true, "timestamp_ms": 15000 }
-```
-
-**Response (400)** — missing/empty `frame`, or unparseable form.
-
-**Response (404)** — unknown `session_id`.
-
----
-
 ### `POST /end-session`
 
 Saves the session graph to MongoDB, removes it from the session registry, and returns a summary.
@@ -469,6 +434,7 @@ Saves the session graph to MongoDB, removes it from the session registry, and re
   "session_id": "f3a1c9d2-...",
   "nodes_saved": 5,
   "edges_saved": 4,
+  "frames_saved": 12,
   "traversal_order": ["client_browser", "load_balancer", "api", "postgres_db", "redis_cache"]
 }
 ```
@@ -495,27 +461,28 @@ In-memory directed graph. One instance per user session.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `create_node` | `(id, label, type) → Node` | Add a new component node |
-| `add_details_to_node` | `(id, details) → Node` | Merge details into a node |
-| `delete_node` | `(id) → None` | Remove node and all incident edges |
-| `add_edge` | `(from_id, to_id, label) → Edge` | Add a directed edge |
-| `remove_edge` | `(from_id, to_id) → None` | Remove a directed edge |
-| `set_entry_point` | `(id) → None` | Set the BFS root |
-| `insert_node_between` | `(from_id, new_id, new_label, new_type, to_id, from_label, to_label) → Node` | Atomic insert between two connected nodes |
-| `get_state` | `() → dict` | Full snapshot: entry_point, nodes, edges |
-| `bfs_order` | `(start_id?) → list[str]` | Node IDs in BFS traversal order |
-| `bfs_serialize` | `(start_id?) → str` | Human-readable BFS document |
+| `create_node` | `(id, label, type) -> Node` | Add a new component node |
+| `add_details_to_node` | `(id, details) -> Node` | Merge details into a node |
+| `delete_node` | `(id) -> None` | Remove node and all incident edges |
+| `add_edge` | `(from_id, to_id, label) -> Edge` | Add a directed edge |
+| `remove_edge` | `(from_id, to_id) -> None` | Remove a directed edge |
+| `set_entry_point` | `(id) -> None` | Set the BFS root |
+| `insert_node_between` | `(from_id, new_id, new_label, new_type, to_id, from_label, to_label) -> Node` | Atomic insert between two connected nodes |
+| `get_state` | `() -> dict` | Full snapshot: entry_point, nodes, edges |
+| `bfs_order` | `(start_id?) -> list[str]` | Node IDs in BFS traversal order |
+| `bfs_serialize` | `(start_id?) -> str` | Human-readable BFS document |
 
 ---
 
 ### `SessionStore` (`core/session_store.py`)
 
-Handles the MongoDB write at session end. Uses Motor (async MongoDB driver).
+Handles MongoDB persistence. Uses Motor (async MongoDB driver).
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `save_session` | `(graph, session_id) → dict` | Write session + node documents to Atlas |
-| `close` | `() → None` | Close the Motor client |
+| `save_frame` | `(session_id, timestamp_ms, visual_delta, verbal_response) -> None` | Write a single frame result to the `frames` collection |
+| `save_session` | `(graph, session_id) -> dict` | Write session + node documents to Atlas |
+| `close` | `() -> None` | Close the Motor client |
 
 **MongoDB collections written:**
 
@@ -525,7 +492,8 @@ Handles the MongoDB write at session end. Uses Motor (async MongoDB driver).
   "_id": "<session_id>",
   "created_at": "<datetime>",
   "traversal_order": ["<node_id>", "..."],
-  "edges": [{ "from": "...", "to": "...", "label": "..." }]
+  "edges": [{ "from": "...", "to": "...", "label": "..." }],
+  "frames_count": 12
 }
 ```
 
@@ -541,3 +509,32 @@ Handles the MongoDB write at session end. Uses Motor (async MongoDB driver).
   "created_at": "<datetime>"
 }
 ```
+
+`system_design.frames`
+```json
+{
+  "session_id": "<session_id>",
+  "timestamp_ms": 15000,
+  "visual_delta": "A box labeled 'API' was drawn.",
+  "verbal_response": "Got it — I've added the API component.",
+  "created_at": "<datetime>"
+}
+```
+
+---
+
+### `GeminiVisionExtractor` (`core/visual_delta_pipeline.py`)
+
+Uses Gemini Vision API to analyse whiteboard frames and describe changes.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `describe_frame` | `(image_bytes, previous_description?) -> str or None` | Analyse a JPEG frame and return a visual delta description |
+
+### `VisualDeltaPipeline` (`core/visual_delta_pipeline.py`)
+
+End-to-end pipeline: frame gating (YOLO) + Gemini Vision analysis.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `process_frame` | `(image, timestamp) -> dict or None` | Run one frame through the full pipeline |

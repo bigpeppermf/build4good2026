@@ -28,6 +28,15 @@ Collection: nodes
     "created_at":       datetime
   }
 
+Collection: frames
+  {
+    "session_id":       str,
+    "timestamp_ms":     int,
+    "visual_delta":     str,
+    "verbal_response":  str,
+    "created_at":       datetime
+  }
+
 Collection: analysis
   {
     "_id":              str   (session_id),
@@ -159,6 +168,11 @@ class SessionStore:
             normalized_confidence = 1.0
         normalized_confidence = max(0.0, min(1.0, normalized_confidence))
 
+        # Count frames already saved for this session.
+        frames_saved = await self._db.frames.count_documents(
+            {"session_id": session_id}
+        )
+
         session_doc = {
             "_id": session_id,
             "created_at": now,
@@ -168,6 +182,7 @@ class SessionStore:
             "validation_corrections": normalized_corrections,
             "validation_summary": normalized_summary,
             "graph_confidence": normalized_confidence,
+            "frames_count": frames_saved,
         }
         node_docs = [
             {
@@ -187,6 +202,7 @@ class SessionStore:
             "session_id": session_id,
             "nodes_saved": len(state["nodes"]),
             "edges_saved": len(state["edges"]),
+            "frames_saved": frames_saved,
             "traversal_order": traversal_order,
             "validation_corrections": normalized_corrections,
             "validation_summary": normalized_summary,

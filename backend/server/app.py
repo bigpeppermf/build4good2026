@@ -5,7 +5,7 @@ Endpoints:
   GET  /docs                    — API reference rendered as HTML
   POST /new-session             — create an isolated graph + agent + CV pipeline for a user
   POST /agent/process-frame   — send a visual_delta (JSON) to the Gemini agent
-  POST /agent/process-capture — multipart JPEG + session_id; runs visual_delta pipeline then agent
+  POST /agent/process-capture — multipart JPEG + session_id; runs Gemini Vision pipeline then agent
   POST /end-session           — save the completed graph to MongoDB
   POST /chat                  — ask follow-up questions using saved analysis context
 
@@ -134,9 +134,9 @@ async def new_session(_request: Request) -> JSONResponse:
     Creates a fresh graph and agent for a new user session.
     Returns a session_id that must be included in all subsequent requests.
 
-    The ``VisualDeltaPipeline`` (YOLO/OCR) is created lazily on the first
-    ``POST /agent/process-capture`` so importing this module does not load
-    heavyweight CV dependencies.
+    The ``VisualDeltaPipeline`` (YOLO + Gemini Vision) is created lazily on
+    the first ``POST /agent/process-capture`` so importing this module does
+    not load heavyweight CV dependencies.
     """
     session_id = str(uuid.uuid4())
     graph = SystemDesignGraph()
