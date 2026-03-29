@@ -93,6 +93,32 @@ const feedbackNarrative = computed(
   () => feedback.value?.narrative ?? "No coaching narrative available.",
 );
 
+const progressStages = ["queued", "validation", "saving_session", "analysis", "saving_analysis", "complete"] as const;
+
+const progressPercent = computed(() => {
+  if (analysisStatus.value === "complete") return 100;
+  if (analysisStatus.value === "failed") return 0;
+  if (analysisStatus.value !== "processing") return 0;
+  const idx = progressStages.indexOf(analysisStage.value as typeof progressStages[number]);
+  if (idx < 0) return 5;
+  return Math.round(((idx + 1) / progressStages.length) * 100);
+});
+
+const progressLabel = computed(() => {
+  if (analysisStatus.value === "complete") return "Evaluation complete";
+  if (analysisStatus.value === "failed") return "Evaluation failed";
+  if (analysisStatus.value !== "processing") return "";
+  const labels: Record<string, string> = {
+    queued: "Queued",
+    validation: "Validating graph",
+    saving_session: "Saving session",
+    analysis: "Analyzing design",
+    saving_analysis: "Saving analysis",
+    complete: "Complete",
+  };
+  return labels[analysisStage.value ?? ""] ?? "Processing";
+});
+
 function scoreBar(value: number): string {
   const normalized = Math.min(25, Math.max(0, Math.round(value)));
   return `${"#".repeat(normalized)}${"-".repeat(25 - normalized)}`;
@@ -405,88 +431,108 @@ watch([analysisStatus, currentSessionId], ([nextStatus, nextSessionId]) => {
         Mirage
       </h2>
 
-      <p
-        v-if="sessionLabel"
-        class="output-session-id"
+      <div
+        v-if="progressPercent > 0 || analysisStatus === 'failed'"
+        class="progress-wrapper"
       >
-        Session <span class="output-session-mono">{{ sessionLabel }}</span>
-      </p>
+        <div class="progress-track">
+          <div
+            class="progress-fill"
+            :class="{ 'progress-fill--failed': analysisStatus === 'failed', 'progress-fill--complete': analysisStatus === 'complete' }"
+            :style="{ width: analysisStatus === 'failed' ? '100%' : `${progressPercent}%` }"
+          />
+        </div>
+        <span class="progress-text">{{ progressLabel }}</span>
+      </div>
 
       <div class="output-body">
-        <div class="output-block">
-          <p class="output-label">Analysis</p>
-          <template v-if="analysisStatus === 'complete' && analysis">
-            <p class="output-value">{{ analysisHeadline }}</p>
-            <p class="output-line">{{ analysisEntryPointLine }}</p>
-            <p class="output-line">{{ analysisMissingLine }}</p>
-            <p class="output-detail">{{ analysis.summary }}</p>
-          </template>
-          <p v-else-if="localAnalysisDisplay" class="output-detail">
-            {{ localAnalysisDisplay }}
-          </p>
-          <p v-else-if="analysisStatus === 'failed'" class="output-error">
-            {{ analysisErrorMessage ?? "Could not load analysis output." }}
-          </p>
-          <p v-else-if="analysisStatus === 'processing'" class="output-placeholder">
-            Processing{{ analysisStage ? ` (${analysisStage})` : "" }}...
-          </p>
-          <p v-else class="output-placeholder">-</p>
+        <!-- Waiting / no session state -->
+        <div v-if="!currentSessionId && !mirageSnapshot" class="output-empty">
+          <p class="output-empty-text">{{ outputNote }}</p>
         </div>
 
-        <div class="output-block">
-          <p class="output-label">Feedback</p>
-          <template v-if="analysisStatus === 'complete' && feedback">
-            <p class="output-subheading">Strengths</p>
-            <ul class="output-list">
-              <li v-for="item in feedbackStrengths" :key="`strength-${item}`">{{ item }}</li>
-              <li v-if="feedbackStrengths.length === 0">No strengths were listed.</li>
-            </ul>
-
-            <p class="output-subheading">Improvements</p>
-            <ul class="output-list">
-              <li v-for="item in feedbackImprovements" :key="`improvement-${item}`">{{ item }}</li>
-              <li v-if="feedbackImprovements.length === 0">No improvements were listed.</li>
-            </ul>
-
-            <p v-if="feedbackCriticalGaps.length > 0" class="output-subheading">Critical gaps</p>
-            <ul v-if="feedbackCriticalGaps.length > 0" class="output-list output-list--critical">
-              <li v-for="item in feedbackCriticalGaps" :key="`gap-${item}`">{{ item }}</li>
-            </ul>
-
-            <p class="output-detail">{{ feedbackNarrative }}</p>
-          </template>
-          <p v-else-if="localFeedbackDisplay" class="output-detail">
-            {{ localFeedbackDisplay }}
-          </p>
-          <p v-else-if="analysisStatus === 'failed'" class="output-error">Feedback unavailable.</p>
-          <p v-else-if="analysisStatus === 'processing'" class="output-placeholder">
-            Waiting for feedback...
-          </p>
-          <p v-else class="output-placeholder">-</p>
+        <!-- Processing state -->
+        <div v-else-if="analysisStatus === 'processing' && !localAnalysisDisplay" class="output-empty">
+          <p class="output-empty-text">{{ outputNote }}</p>
         </div>
 
-        <div class="output-block">
-          <p class="output-label">Score</p>
-          <template v-if="analysisStatus === 'complete' && score">
-            <p class="output-value">{{ score.total }} / 100 | {{ score.grade }}</p>
-            <div class="score-lines">
-              <p v-for="line in scoreLines" :key="line.key" class="score-line">
-                <span class="score-line-label">{{ line.label }}</span>
-                <span class="score-line-value">{{ line.bar }} {{ line.value }}/25</span>
-              </p>
+        <!-- Failed state -->
+        <div v-else-if="analysisStatus === 'failed' && !localAnalysisDisplay" class="output-empty">
+          <p class="output-error">{{ analysisErrorMessage ?? "Evaluation failed." }}</p>
+          <p class="output-note">{{ outputNote }}</p>
+        </div>
+
+        <!-- Evaluation content -->
+        <template v-else>
+          <!-- Score banner -->
+          <div v-if="analysisStatus === 'complete' && score" class="eval-score-banner">
+            <span class="eval-score-grade">{{ score.grade }}</span>
+            <span class="eval-score-total">{{ score.total }}<span class="eval-score-max"> / 100</span></span>
+          </div>
+
+          <!-- Score breakdown -->
+          <div v-if="analysisStatus === 'complete' && score" class="eval-breakdown">
+            <div v-for="line in scoreLines" :key="line.key" class="eval-bar-row">
+              <span class="eval-bar-label">{{ line.label }}</span>
+              <div class="eval-bar-track">
+                <div class="eval-bar-fill" :style="{ width: `${(line.value / 25) * 100}%` }" />
+              </div>
+              <span class="eval-bar-value">{{ line.value }}</span>
             </div>
-          </template>
-          <p v-else-if="localScoreDisplay" class="output-value output-value--pre">
-            {{ localScoreDisplay }}
-          </p>
-          <p v-else-if="analysisStatus === 'failed'" class="output-error">Score unavailable.</p>
-          <p v-else-if="analysisStatus === 'processing'" class="output-placeholder">
-            Scoring in progress...
-          </p>
-          <p v-else class="output-placeholder">-</p>
-        </div>
+          </div>
+          <div v-else-if="localScoreDisplay" class="eval-local-score">
+            <p class="output-detail">{{ localScoreDisplay }}</p>
+          </div>
 
-        <p class="output-note">{{ outputNote }}</p>
+          <!-- Analysis summary -->
+          <div v-if="analysisStatus === 'complete' && analysis" class="eval-section">
+            <p class="eval-headline">{{ analysisHeadline }}</p>
+            <p class="eval-meta">{{ analysisEntryPointLine }}</p>
+            <p class="eval-meta">{{ analysisMissingLine }}</p>
+            <p class="eval-body">{{ analysis.summary }}</p>
+          </div>
+          <div v-else-if="localAnalysisDisplay" class="eval-section">
+            <p class="eval-body">{{ localAnalysisDisplay }}</p>
+          </div>
+
+          <!-- Strengths -->
+          <div v-if="analysisStatus === 'complete' && feedback" class="eval-section">
+            <p class="eval-section-label">Strengths</p>
+            <ul class="eval-list">
+              <li v-for="item in feedbackStrengths" :key="`s-${item}`">{{ item }}</li>
+              <li v-if="feedbackStrengths.length === 0" class="eval-list-empty">None identified</li>
+            </ul>
+          </div>
+
+          <!-- Improvements -->
+          <div v-if="analysisStatus === 'complete' && feedback" class="eval-section">
+            <p class="eval-section-label">Improvements</p>
+            <ul class="eval-list">
+              <li v-for="item in feedbackImprovements" :key="`i-${item}`">{{ item }}</li>
+              <li v-if="feedbackImprovements.length === 0" class="eval-list-empty">None identified</li>
+            </ul>
+          </div>
+
+          <!-- Critical gaps -->
+          <div v-if="analysisStatus === 'complete' && feedbackCriticalGaps.length > 0" class="eval-section">
+            <p class="eval-section-label eval-section-label--critical">Critical gaps</p>
+            <ul class="eval-list eval-list--critical">
+              <li v-for="item in feedbackCriticalGaps" :key="`g-${item}`">{{ item }}</li>
+            </ul>
+          </div>
+
+          <!-- Narrative -->
+          <div v-if="analysisStatus === 'complete' && feedback" class="eval-section">
+            <p class="eval-body eval-body--narrative">{{ feedbackNarrative }}</p>
+          </div>
+
+          <!-- Local feedback fallback -->
+          <div v-else-if="localFeedbackDisplay && analysisStatus !== 'complete'" class="eval-section">
+            <p class="eval-body">{{ localFeedbackDisplay }}</p>
+          </div>
+
+          <p class="output-note">{{ outputNote }}</p>
+        </template>
       </div>
     </section>
 
@@ -556,20 +602,6 @@ watch([analysisStatus, currentSessionId], ([nextStatus, nextSessionId]) => {
   flex-direction: column;
 }
 
-.output-session-id {
-  margin: 0 0 0.5rem;
-  padding: 0 0.25rem 0 0;
-  font-family: var(--font-sans);
-  font-size: clamp(0.6875rem, 0.65rem + 0.1vw, 0.75rem);
-  color: var(--ink-muted);
-  word-break: break-all;
-}
-
-.output-session-mono {
-  font-family: var(--font-mono);
-  font-size: 0.95em;
-  color: var(--ink);
-}
 @keyframes side-heading-shine {
   0%,
   100% {
@@ -804,56 +836,86 @@ watch([analysisStatus, currentSessionId], ([nextStatus, nextSessionId]) => {
   outline-offset: 2px;
 }
 
-.output-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0 0.25rem 1rem 0;
+/* ---- Progress bar ---- */
+
+.progress-wrapper {
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: clamp(1.25rem, 3vw, 1.75rem);
-  -webkit-overflow-scrolling: touch;
+  gap: 0.3rem;
+  margin-bottom: 1rem;
 }
 
-.output-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  align-items: flex-start;
-  text-align: left;
+.progress-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-mid, #1e1e1e);
+  overflow: hidden;
 }
 
-.output-label {
-  margin: 0;
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--pop, #c45a3a), #ff8f78);
+  transition: width 0.6s ease;
+}
+
+.progress-fill--complete {
+  background: linear-gradient(90deg, var(--accent, #6b9f6b), #9db8a8);
+}
+
+.progress-fill--failed {
+  background: var(--danger, #e05050);
+}
+
+.progress-text {
   font-family: var(--font-mono);
-  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
+  font-size: clamp(0.5625rem, 0.55rem + 0.1vw, 0.625rem);
   font-weight: var(--font-mono-weight);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-muted);
 }
 
-.output-placeholder,
-.output-line {
+/* ---- Output body ---- */
+
+.output-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 0.5rem 1.5rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1rem, 2.5vw, 1.5rem);
+  -webkit-overflow-scrolling: touch;
+}
+
+.output-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem 1rem;
+}
+
+.output-empty-text {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
+  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
   font-weight: 500;
-  line-height: 1.5;
-  color: var(--ink);
-  white-space: pre-wrap;
+  color: var(--ink-muted);
+  text-align: center;
+  line-height: 1.55;
+  max-width: 28rem;
 }
 
-.output-value--pre {
-  white-space: pre-line;
-}
-
-.output-value {
+.output-error {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
-  font-weight: 600;
-  line-height: 1.5;
-  color: var(--ink);
+  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
+  color: var(--danger);
+  text-align: center;
 }
 
 .output-detail {
@@ -866,68 +928,6 @@ watch([analysisStatus, currentSessionId], ([nextStatus, nextSessionId]) => {
   white-space: pre-wrap;
 }
 
-.output-subheading {
-  margin: 0.25rem 0 0;
-  font-family: var(--font-mono);
-  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
-  font-weight: var(--font-mono-weight);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.output-list {
-  margin: 0;
-  padding-left: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
-}
-
-.output-list--critical {
-  color: var(--danger);
-}
-
-.output-error {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
-  color: var(--danger);
-}
-
-.score-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  width: 100%;
-}
-
-.score-line {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-}
-
-.score-line-label {
-  font-family: var(--font-mono);
-  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
-  font-weight: var(--font-mono-weight);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
-}
-
-.score-line-value {
-  font-family: var(--font-mono);
-  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
-  color: var(--ink);
-  white-space: pre;
-}
-
 .output-note {
   margin: auto 0 0;
   padding-top: 1rem;
@@ -938,6 +938,174 @@ watch([analysisStatus, currentSessionId], ([nextStatus, nextSessionId]) => {
   color: var(--ink-faint);
   text-align: left;
   line-height: 1.45;
+}
+
+/* ---- Score banner ---- */
+
+.eval-score-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--surface-mid, #1e1e1e);
+  border: 1px solid var(--line);
+}
+
+.eval-score-grade {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 3vw + 0.5rem, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  background: linear-gradient(100deg, var(--pop) 0%, #ff8f78 50%, #ffd8ce 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.eval-score-total {
+  font-family: var(--font-mono);
+  font-size: clamp(1rem, 1.5vw + 0.25rem, 1.25rem);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.eval-score-max {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+/* ---- Score breakdown bars ---- */
+
+.eval-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.eval-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.eval-bar-label {
+  flex-shrink: 0;
+  width: 6.5rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
+  font-weight: var(--font-mono-weight);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.eval-bar-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-mid, #1e1e1e);
+  overflow: hidden;
+}
+
+.eval-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--pop, #c45a3a), #ff8f78);
+  transition: width 0.5s ease;
+}
+
+.eval-bar-value {
+  flex-shrink: 0;
+  width: 1.75rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: clamp(0.6875rem, 0.65rem + 0.15vw, 0.75rem);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.eval-local-score {
+  padding: 0.5rem 0;
+}
+
+/* ---- Evaluation sections ---- */
+
+.eval-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.eval-headline {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(0.875rem, 0.85rem + 0.15vw, 0.9375rem);
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.eval-meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--ink-muted);
+}
+
+.eval-body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.eval-body--narrative {
+  padding: 0.6rem 0.85rem;
+  border-left: 2px solid var(--line-strong, #444);
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.eval-section-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 0.6rem + 0.15vw, 0.6875rem);
+  font-weight: var(--font-mono-weight);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.eval-section-label--critical {
+  color: var(--danger);
+}
+
+.eval-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: clamp(0.8125rem, 0.8rem + 0.2vw, 0.9375rem);
+  line-height: 1.5;
+}
+
+.eval-list-empty {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.eval-list--critical {
+  color: var(--danger);
 }
 
 @media (max-width: 768px) {
