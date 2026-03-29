@@ -1,8 +1,8 @@
 # Backend
 
-This backend currently contains two main responsibilities:
+This backend contains two main responsibilities:
 
-- A Python MCP server for live system-design sessions
+- A Python HTTP server (Starlette + Uvicorn) for live system-design sessions
 - A visual-delta pipeline that converts accepted frames into text updates for the agent
 
 ## Current Layout
@@ -16,27 +16,29 @@ backend/
     visual_delta_pipeline.py  # OCR + connection detection + visual_delta generation
     graph.py             # In-memory system design graph
     session_store.py     # MongoDB persistence for finished sessions
+  server/
+    app.py               # Starlette HTTP server + all endpoints
   docs/
     api-reference.md
     flow-and-examples.md
-  graph_mcp/
-    server.py            # MCP server and /end-session route
-  main.py                # Server entrypoint
+  main.py                # Server entrypoint (uv run main.py)
   pyproject.toml         # Python dependencies and packaging config
 ```
 
 ## What The Backend Does Today
 
-### 1. MCP graph backend
+### 1. HTTP session backend
 
-The current server starts from `backend/main.py` and runs the MCP app in `backend/graph_mcp/server.py`.
+The server starts from `backend/main.py` and runs the Starlette app in `backend/server/app.py`.
 
 That server:
 
-- keeps one in-memory graph for the active session
-- exposes MCP tools for AI-driven graph edits
-- accepts `POST /end-session`
-- writes the finished session to MongoDB
+- keeps one in-memory graph + agent per active session
+- exposes HTTP endpoints for session management
+- accepts `POST /agent/process-capture` (JPEG frames from the frontend)
+- runs the visual-delta pipeline on each accepted frame
+- calls the Gemini agent with the resulting text description
+- accepts `POST /end-session` and writes the finished session to MongoDB
 
 ### 2. Visual-delta pipeline
 
@@ -97,28 +99,23 @@ None
 
 ## Install
 
-Create a virtual environment and install the backend in editable mode:
+Use [uv](https://docs.astral.sh/uv/) to install dependencies:
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -e backend
+cd backend
+uv sync
 ```
 
-If you need to activate it in your shell:
-
-```bash
-source backend/.venv/bin/activate
-```
+This creates `backend/.venv` automatically.
 
 ## Run
 
-The current backend server entrypoint is:
-
 ```bash
-python backend/main.py
+cd backend
+uv run main.py
 ```
 
-Before running the MCP server, make sure `.env` contains a valid `MONGODB_URI`.
+Make sure `.env` at the repo root contains valid `MONGODB_URI` and `GOOGLE_API_KEY` values before starting. See `.env.example` for the template.
 
 ## Dependencies Used By The Visual Pipeline
 

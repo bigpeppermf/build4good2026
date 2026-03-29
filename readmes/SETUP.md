@@ -4,7 +4,7 @@ Two independent servers:
 
 | Server | Stack | Port |
 |--------|-------|------|
-| **Backend** | Python 3.12 + FastMCP + Uvicorn | 8000 |
+| **Backend** | Python 3.12 + Starlette + Uvicorn | 8000 |
 | **Frontend** | Vite + Vue 3 + TypeScript | 5173 |
 
 ---
@@ -42,7 +42,7 @@ cd ..
 
 Each server must be started in its own terminal.
 
-### Backend (Python MCP server + Gemini agent)
+### Backend (Python + Gemini agent)
 
 ```bash
 cd backend
@@ -126,13 +126,15 @@ build4good2026/
 ├── frontend/             # Vue 3 frontend
 │   ├── src/
 │   │   ├── composables/  # useWhiteboardSession (camera + frame capture)
-│   │   ├── views/        # DashboardView, HomeView
+│   │   ├── utils/        # apiUrl helper
+│   │   ├── views/        # DashboardView, HomeView, ChatView, LoginView
 │   │   └── types/        # Shared TypeScript types
 │   ├── vite.config.ts    # Proxy: /api → localhost:8000
 │   └── package.json
 │
 ├── readmes/              # Project-level documentation
 │   ├── SETUP.md          # This file
+│   ├── STREAMING.md      # Practice session HTTP API reference
 │   └── BACKEND_DOCS.md   # System overview and component descriptions
 │
 └── .env.example          # Template for required environment variables

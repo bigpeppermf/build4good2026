@@ -137,113 +137,113 @@ function handleClose() {
           </ol>
         </div>
 
-    <!-- Fullscreen camera overlay -->
-    <Teleport to="body">
-      <div
-        v-if="cameraOpen"
-        class="camera-overlay"
-      >
-        <button
-          type="button"
-          class="camera-close"
-          aria-label="Close camera"
-          @click="handleClose"
-        >
-          &times;
-        </button>
-
-        <p
-          v-if="errorMessage"
-          class="camera-error"
-          role="alert"
-        >
-          {{ errorMessage }}
-        </p>
-
-        <div
-          v-if="isSessionActive"
-          class="camera-stats"
-          aria-live="polite"
-        >
-          <span class="stat">Session: {{ sessionId ? sessionId.slice(0, 8) + "…" : "—" }}</span>
-          <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Audio chunks: {{ audioChunksRecordedCount }}</span>
-          <span class="stats-sep" aria-hidden="true">·</span>
-          <span class="stat">Frames posted: {{ imageFramesSentCount }}</span>
-        </div>
-
-        <label
-          v-if="isSessionActive"
-          class="tts-toggle"
-        >
-          <input
-            v-model="ttsEnabled"
-            type="checkbox"
-          >
-          <span>Speak responses (TTS)</span>
-        </label>
-
-        <p
-          v-if="lastCaptureError && isSessionActive"
-          class="camera-capture-error"
-          role="status"
-        >
-          {{ lastCaptureError }}
-        </p>
-
-        <div
-          v-show="activeStream"
-          class="camera-preview"
-        >
-          <video
-            ref="videoRef"
-            class="camera-video"
-            playsinline
-            muted
-            autoplay
-          />
+        <!-- Fullscreen camera overlay -->
+        <Teleport to="body">
           <div
-            class="frame-guide"
-            aria-hidden="true"
+            v-if="cameraOpen"
+            class="camera-overlay"
           >
-            <div class="frame-guide-target">
-              <span class="frame-corner frame-corner--tl" />
-              <span class="frame-corner frame-corner--tr" />
-              <span class="frame-corner frame-corner--bl" />
-              <span class="frame-corner frame-corner--br" />
-            </div>
-            <p class="frame-guide-caption">
-              Fit whiteboard inside frame
+            <button
+              type="button"
+              class="camera-close"
+              aria-label="Close camera"
+              @click="handleClose"
+            >
+              &times;
+            </button>
+
+            <p
+              v-if="errorMessage"
+              class="camera-error"
+              role="alert"
+            >
+              {{ errorMessage }}
             </p>
-          </div>
-          <div
-            v-if="isSessionActive"
-            class="timer-chip"
-            role="status"
-            :aria-label="`Elapsed ${sessionTimeLabel}`"
-          >
-            {{ sessionTimeLabel }}
-          </div>
-          <p
-            v-if="isSessionActive"
-            class="recording-badge"
-          >
-            Live
-          </p>
-        </div>
 
-        <div class="camera-bottom">
-          <button
-            type="button"
-            class="btn-stop"
-            :disabled="!isSessionActive"
-            @click="handleClose"
-          >
-            Stop session
-          </button>
-        </div>
-      </div>
-    </Teleport>
+            <div
+              v-if="isSessionActive"
+              class="camera-stats"
+              aria-live="polite"
+            >
+              <span class="stat">Session: {{ sessionId ? sessionId.slice(0, 8) + "…" : "—" }}</span>
+              <span class="stats-sep" aria-hidden="true">·</span>
+              <span class="stat">Audio chunks: {{ audioChunksRecordedCount }}</span>
+              <span class="stats-sep" aria-hidden="true">·</span>
+              <span class="stat">Frames posted: {{ imageFramesSentCount }}</span>
+            </div>
+
+            <label
+              v-if="isSessionActive"
+              class="tts-toggle"
+            >
+              <input
+                v-model="ttsEnabled"
+                type="checkbox"
+              >
+              <span>Speak responses (TTS)</span>
+            </label>
+
+            <p
+              v-if="lastCaptureError && isSessionActive"
+              class="camera-capture-error"
+              role="status"
+            >
+              {{ lastCaptureError }}
+            </p>
+
+            <div
+              v-show="activeStream"
+              class="camera-preview"
+            >
+              <video
+                ref="videoRef"
+                class="camera-video"
+                playsinline
+                muted
+                autoplay
+              />
+              <div
+                class="frame-guide"
+                aria-hidden="true"
+              >
+                <div class="frame-guide-target">
+                  <span class="frame-corner frame-corner--tl" />
+                  <span class="frame-corner frame-corner--tr" />
+                  <span class="frame-corner frame-corner--bl" />
+                  <span class="frame-corner frame-corner--br" />
+                </div>
+                <p class="frame-guide-caption">
+                  Fit whiteboard inside frame
+                </p>
+              </div>
+              <div
+                v-if="isSessionActive"
+                class="timer-chip"
+                role="status"
+                :aria-label="`Elapsed ${sessionTimeLabel}`"
+              >
+                {{ sessionTimeLabel }}
+              </div>
+              <p
+                v-if="isSessionActive"
+                class="recording-badge"
+              >
+                Live
+              </p>
+            </div>
+
+            <div class="camera-bottom">
+              <button
+                type="button"
+                class="btn-stop"
+                :disabled="!isSessionActive"
+                @click="handleClose"
+              >
+                Stop session
+              </button>
+            </div>
+          </div>
+        </Teleport>
       </section>
 
       <section

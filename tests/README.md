@@ -10,7 +10,7 @@ This test harness exercises the full backend visual-delta pipeline:
 - change description
 - plain-text `visual_delta` output to a text file
 
-It does not call graph mutation or the MCP server.
+It does not call graph mutation or the HTTP server.
 
 ### Why this is a good Mac-side test
 
