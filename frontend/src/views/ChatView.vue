@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { useMirageAuth } from "../composables/useMirageAuth";
 import { useSessionAnalysis } from "../composables/useSessionAnalysis";
 import { apiUrl } from "../utils/apiUrl";
 import {
@@ -22,6 +23,7 @@ const SEEDED_ANALYSIS_MESSAGE =
 
 const route = useRoute();
 const router = useRouter();
+const { apiFetch, userId } = useMirageAuth();
 
 const messages = ref<ChatMessage[]>([]);
 const input = ref("");
@@ -40,6 +42,8 @@ const {
   startPolling,
   stopPolling,
 } = useSessionAnalysis();
+
+const currentUserId = computed(() => userId.value ?? null);
 
 const currentSessionId = computed(() => {
   const paramSessionId = route.params.sessionId;
@@ -127,7 +131,11 @@ const scoreLines = computed(() => {
 });
 
 function loadMirageSnapshot(sessionId: string | null) {
-  mirageSnapshot.value = sessionId ? loadWhiteboardSnapshot(sessionId) : null;
+  const activeUserId = currentUserId.value;
+  mirageSnapshot.value =
+    sessionId && activeUserId
+      ? loadWhiteboardSnapshot(activeUserId, sessionId)
+      : null;
 }
 
 const localAnalysisDisplay = computed(() => {
@@ -241,7 +249,11 @@ onMounted(() => {
     loadMirageSnapshot(currentSessionId.value);
     return;
   }
-  const lastSessionId = getLastSessionId();
+  const activeUserId = currentUserId.value;
+  if (!activeUserId) {
+    return;
+  }
+  const lastSessionId = getLastSessionId(activeUserId);
   if (!lastSessionId) {
     return;
   }
@@ -286,7 +298,7 @@ async function sendMessage() {
 
   isStreaming.value = true;
   try {
-    const res = await fetch(apiUrl("/chat"), {
+    const res = await apiFetch(apiUrl("/chat"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -330,8 +342,12 @@ async function sendMessage() {
 }
 
 watch(
-  currentSessionId,
-  (nextSessionId, previousSessionId) => {
+  [currentSessionId, currentUserId],
+  ([nextSessionId, nextUserId], [previousSessionId, previousUserId]) => {
+    if (nextUserId !== previousUserId) {
+      loadMirageSnapshot(nextSessionId);
+    }
+
     if (nextSessionId !== previousSessionId) {
       messages.value = [];
       seededSessionId.value = null;

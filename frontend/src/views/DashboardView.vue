@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
+import { useMirageAuth } from "../composables/useMirageAuth";
 import {
   useWhiteboardSession,
   type FrameCropNorm,
@@ -36,13 +37,19 @@ const {
   stopSession,
 } = useWhiteboardSession();
 
+const { userId } = useMirageAuth();
 const router = useRouter();
 const cameraOpen = ref(false);
-const recentSessionsList = ref(getRecentSessions());
+const currentUserId = computed(() => userId.value ?? null);
+const recentSessionsList = ref<{ sessionId: string; savedAt: string }[]>([]);
 
-onMounted(() => {
-  recentSessionsList.value = getRecentSessions();
-});
+watch(
+  currentUserId,
+  (nextUserId) => {
+    recentSessionsList.value = nextUserId ? getRecentSessions(nextUserId) : [];
+  },
+  { immediate: true },
+);
 
 function formatSavedAt(iso: string): string {
   try {
@@ -228,10 +235,12 @@ function handleStartSession() {
 
 async function handleClose() {
   const sid = sessionId.value;
+  const activeUserId = currentUserId.value;
   cameraOpen.value = false;
   await stopSession();
-  if (sid) {
+  if (sid && activeUserId) {
     persistWhiteboardSnapshot({
+      userId: activeUserId,
       sessionId: sid,
       savedAt: new Date().toISOString(),
       verbalResponses: verbalResponses.value.map((v) => ({
@@ -246,7 +255,7 @@ async function handleClose() {
       uploadMessage: uploadMessage.value,
     });
   }
-  recentSessionsList.value = getRecentSessions();
+  recentSessionsList.value = activeUserId ? getRecentSessions(activeUserId) : [];
   const targetSessionId = lastCompletedSessionId.value ?? sid;
   if (!targetSessionId) {
     return;

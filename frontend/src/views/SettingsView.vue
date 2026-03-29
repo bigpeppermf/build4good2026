@@ -127,7 +127,7 @@ const analyticsOptIn = ref(true);
       </section>
 
       <p class="settings-note">
-        Preferences are stored in this session only until accounts and sync are connected.
+        Account authentication is now active. These preference toggles are still local-only until settings sync is wired to the backend.
       </p>
     </div>
   </div>

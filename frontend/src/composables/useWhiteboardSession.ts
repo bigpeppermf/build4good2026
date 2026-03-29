@@ -1,5 +1,6 @@
 import { computed, nextTick, onUnmounted, ref, shallowRef } from "vue";
 
+import { useMirageAuth } from "./useMirageAuth";
 import { apiUrl } from "../utils/apiUrl";
 
 /** Still frames from the webcam (not video stream).
@@ -138,6 +139,7 @@ function captureJpegFromVideo(
 }
 
 export function useWhiteboardSession() {
+  const { apiFetch } = useMirageAuth();
   const videoRef = ref<HTMLVideoElement | null>(null);
 
   const activeStream = shallowRef<MediaStream | null>(null);
@@ -343,7 +345,7 @@ export function useWhiteboardSession() {
 
     try {
       captureInFlight.value = true;
-      const res = await fetch(apiUrl("/agent/process-capture"), {
+      const res = await apiFetch(apiUrl("/agent/process-capture"), {
         method: "POST",
         body: form,
       });
@@ -428,7 +430,7 @@ export function useWhiteboardSession() {
         finalizedAudio.type.includes("ogg") ? "session-audio.ogg" : "session-audio.webm",
       );
 
-      const res = await fetch(apiUrl("/end-session"), {
+      const res = await apiFetch(apiUrl("/end-session"), {
         method: "POST",
         body: form,
       });
@@ -570,7 +572,7 @@ export function useWhiteboardSession() {
     isBeginningSession.value = true;
 
     try {
-      const nsRes = await fetch(apiUrl("/new-session"), { method: "POST" });
+      const nsRes = await apiFetch(apiUrl("/new-session"), { method: "POST" });
       if (!nsRes.ok) {
         throw new Error(
           "Could not create a backend session (is the API running on port 8000?)",

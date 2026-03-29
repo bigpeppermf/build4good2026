@@ -3,6 +3,23 @@ import { createApp, defineComponent } from "vue";
 
 import { useSessionAnalysis } from "../src/composables/useSessionAnalysis";
 
+const { getTokenMock } = vi.hoisted(() => ({
+  getTokenMock: vi.fn(async () => "test-session-token"),
+}));
+
+vi.mock("@clerk/vue", async () => {
+  const { ref } = await import("vue");
+  return {
+    useAuth: () => ({
+      getToken: ref(getTokenMock),
+      isLoaded: ref(true),
+      isSignedIn: ref(true),
+      sessionId: ref("sess_test"),
+      userId: ref("user_test"),
+    }),
+  };
+});
+
 function response(status: number, body: Record<string, unknown>): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -35,6 +52,7 @@ describe("useSessionAnalysis", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    getTokenMock.mockResolvedValue("test-session-token");
     vi.stubGlobal("fetch", fetchMock);
   });
 
@@ -88,9 +106,16 @@ describe("useSessionAnalysis", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith("/api/analysis/session-1", {
-      method: "GET",
-    });
+    const [requestUrl, requestInit] = fetchMock.mock.calls[0] as [
+      string,
+      RequestInit | undefined,
+    ];
+    expect(requestUrl).toBe("/api/analysis/session-1");
+    expect(requestInit?.method).toBe("GET");
+    expect(requestInit?.headers).toBeInstanceOf(Headers);
+    expect((requestInit?.headers as Headers).get("Authorization")).toBe(
+      "Bearer test-session-token",
+    );
     expect(sessionAnalysis.analysis.value?.architecture_pattern).toBe(
       "3-tier web architecture",
     );

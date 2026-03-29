@@ -1,28 +1,64 @@
 <script setup lang="ts">
-import { RouterLink } from "vue-router";
+import { ClerkLoaded, ClerkLoading, Show, SignIn } from "@clerk/vue";
+import { computed } from "vue";
+import { useRoute } from "vue-router";
+
+const route = useRoute();
+
+const redirectUrl = computed(() => {
+  const candidate = route.query.redirect;
+  if (typeof candidate === "string" && candidate.startsWith("/")) {
+    return candidate;
+  }
+  return "/dashboard";
+});
 </script>
 
 <template>
   <div class="login-page">
-    <div class="login-card">
-      <p class="login-meta">
-        Sign in
-      </p>
-      <h1 class="login-title">
-        Welcome back
-      </h1>
-      <p class="login-lead">
-        Account sign-in is not configured in this build. Use the app from the sidebar: Dashboard for capture, Chat for snapshots and agent messages.
-      </p>
-      <div class="login-actions">
-        <RouterLink
-          :to="{ name: 'dashboard' }"
-          class="btn-dashboard"
-        >
-          Go to Dashboard
-        </RouterLink>
+    <ClerkLoading>
+      <div class="login-card login-card--status">
+        <p class="login-meta">
+          Sign in
+        </p>
+        <p class="login-status">
+          Loading authentication…
+        </p>
       </div>
-    </div>
+    </ClerkLoading>
+
+    <ClerkLoaded>
+      <Show when="signed-out">
+        <div class="login-card">
+          <p class="login-meta">
+            Sign in
+          </p>
+          <h1 class="login-title">
+            Keep each practice run tied to one account
+          </h1>
+          <p class="login-lead">
+            Mirage now scopes sessions, analysis, and local browser snapshots to the authenticated user. Sign in to start a secure session.
+          </p>
+          <div class="login-auth">
+            <SignIn
+              :force-redirect-url="redirectUrl"
+              :fallback-redirect-url="redirectUrl"
+            />
+          </div>
+        </div>
+      </Show>
+
+      <Show when="signed-in">
+        <div class="login-card login-card--status">
+          <p class="login-meta">
+            Sign in
+          </p>
+          <p class="login-status">
+            Redirecting to your workspace…
+          </p>
+        </div>
+      </Show>
+    </ClerkLoaded>
   </div>
 </template>
 
@@ -38,7 +74,7 @@ import { RouterLink } from "vue-router";
 
 .login-card {
   width: 100%;
-  max-width: min(26rem, 100%);
+  max-width: min(32rem, 100%);
   padding: clamp(1.35rem, 4.5vw, 2.25rem) clamp(1rem, 3.5vw, 1.75rem);
   border: 1px solid var(--rose-line);
   border-radius: 4px;
@@ -46,6 +82,10 @@ import { RouterLink } from "vue-router";
   box-shadow:
     0 1px 0 var(--edge-inset) inset,
     0 32px 64px -36px rgb(0 0 0 / 0.65);
+}
+
+.login-card--status {
+  max-width: min(24rem, 100%);
   text-align: center;
 }
 
@@ -69,49 +109,19 @@ import { RouterLink } from "vue-router";
   line-height: 1.1;
 }
 
-.login-lead {
-  margin: 0 0 clamp(1.25rem, 3vw, 1.75rem);
+.login-lead,
+.login-status {
+  margin: 0;
   font-size: clamp(0.9375rem, 0.9rem + 0.25vw, 1.0625rem);
   line-height: 1.6;
   color: var(--ink-muted);
   text-wrap: pretty;
 }
 
-.login-actions {
+.login-auth {
+  margin-top: clamp(1.25rem, 3vw, 1.75rem);
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.btn-dashboard {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
-  min-height: 2.75rem;
-  padding: 0.55rem 1.35rem;
-  font-family: var(--font-sans);
-  font-size: clamp(0.8125rem, 0.8rem + 0.15vw, 0.875rem);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--void);
-  background: var(--ink);
-  border: 1px solid var(--btn-ink-border);
-  border-radius: 4px;
-  text-decoration: none;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease;
-}
-
-.btn-dashboard:hover {
-  background: var(--btn-ink-bg-hover);
-  border-color: var(--btn-ink-border-hover);
-}
-
-.btn-dashboard:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
 }
 
 @media (max-width: 480px) {

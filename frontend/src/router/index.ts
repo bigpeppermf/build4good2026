@@ -10,9 +10,24 @@ const router = createRouter({
   routes: [
     { path: "/", name: "home", component: HomeView },
     { path: "/login", name: "login", component: LoginView },
-    { path: "/dashboard", name: "dashboard", component: DashboardView },
-    { path: "/chat/:sessionId?", name: "chat", component: ChatView },
-    { path: "/settings", name: "settings", component: SettingsView },
+    {
+      path: "/dashboard",
+      name: "dashboard",
+      component: DashboardView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/chat/:sessionId?",
+      name: "chat",
+      component: ChatView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: SettingsView,
+      meta: { requiresAuth: true },
+    },
   ],
 });
 

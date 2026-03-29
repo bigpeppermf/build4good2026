@@ -1,6 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, defineComponent } from "vue";
 
+const { getTokenMock } = vi.hoisted(() => ({
+  getTokenMock: vi.fn(async () => "test-session-token"),
+}));
+
+vi.mock("@clerk/vue", async () => {
+  const { ref } = await import("vue");
+  return {
+    useAuth: () => ({
+      getToken: ref(getTokenMock),
+      isLoaded: ref(true),
+      isSignedIn: ref(true),
+      sessionId: ref("sess_test"),
+      userId: ref("user_test"),
+    }),
+  };
+});
+
 import { useWhiteboardSession } from "../src/composables/useWhiteboardSession";
 
 type MockTrack = MediaStreamTrack & { stop: ReturnType<typeof vi.fn> };
@@ -107,6 +124,7 @@ describe("useWhiteboardSession audio lifecycle", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    getTokenMock.mockResolvedValue("test-session-token");
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("MediaStream", MockMediaStream);
     vi.stubGlobal("MediaRecorder", MockMediaRecorder);
@@ -164,18 +182,29 @@ describe("useWhiteboardSession audio lifecycle", () => {
     expect(session.audioBlob.value).not.toBeNull();
     expect(session.audioBlob?.value?.size ?? 0).toBeGreaterThan(0);
     expect(session.audioBlob?.value?.type).toContain("audio/");
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/new-session", {
-      method: "POST",
-    });
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "/api/end-session",
-      expect.objectContaining({
-        method: "POST",
-      }),
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const [newSessionUrl, newSessionInit] = fetchMock.mock.calls[0] as [
+      string,
+      RequestInit | undefined,
+    ];
+    expect(newSessionUrl).toBe("/api/new-session");
+    expect(newSessionInit?.method).toBe("POST");
+    expect(newSessionInit?.headers).toBeInstanceOf(Headers);
+    expect((newSessionInit?.headers as Headers).get("Authorization")).toBe(
+      "Bearer test-session-token",
     );
-    const endSessionCall = fetchMock.mock.calls[1];
-    const endSessionInit = endSessionCall?.[1] as RequestInit | undefined;
+
+    const [endSessionUrl, endSessionInit] = fetchMock.mock.calls[1] as [
+      string,
+      RequestInit | undefined,
+    ];
+    expect(endSessionUrl).toBe("/api/end-session");
+    expect(endSessionInit?.method).toBe("POST");
+    expect(endSessionInit?.headers).toBeInstanceOf(Headers);
+    expect((endSessionInit?.headers as Headers).get("Authorization")).toBe(
+      "Bearer test-session-token",
+    );
     expect(endSessionInit?.body).toBeInstanceOf(FormData);
     const endSessionBody = endSessionInit?.body as FormData;
     expect(endSessionBody.get("session_id")).toBe("session-1");

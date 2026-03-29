@@ -1,18 +1,87 @@
 <script setup lang="ts">
-import { RouterView } from "vue-router";
+import { ClerkLoaded, ClerkLoading, useAuth } from "@clerk/vue";
+import { computed, watch } from "vue";
+import { RouterView, useRoute, useRouter } from "vue-router";
 import AppNav from "./components/AppNav.vue";
+
+const route = useRoute();
+const router = useRouter();
+const { isLoaded, isSignedIn } = useAuth();
+
+const isProtectedRoute = computed(() => route.meta.requiresAuth === true);
+
+function sanitizeRedirect(target: unknown): string | null {
+  if (typeof target !== "string" || !target.startsWith("/")) {
+    return null;
+  }
+  return target;
+}
+
+watch(
+  [() => route.fullPath, isLoaded, isSignedIn],
+  ([nextPath, nextIsLoaded, nextIsSignedIn]) => {
+    if (!nextIsLoaded) {
+      return;
+    }
+
+    if (!nextIsSignedIn && isProtectedRoute.value) {
+      void router.replace({
+        name: "login",
+        query: { redirect: nextPath },
+      });
+      return;
+    }
+
+    if (nextIsSignedIn && route.name === "login") {
+      const redirectTarget = sanitizeRedirect(route.query.redirect) ?? "/dashboard";
+      if (redirectTarget !== route.fullPath) {
+        void router.replace(redirectTarget);
+      }
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
-  <div class="shell">
-    <AppNav />
-    <main class="main">
-      <RouterView />
-    </main>
-  </div>
+  <ClerkLoading>
+    <div class="loading-shell">
+      <p class="loading-copy">
+        Loading authentication…
+      </p>
+    </div>
+  </ClerkLoading>
+
+  <ClerkLoaded>
+    <div class="shell">
+      <AppNav />
+      <main class="main">
+        <RouterView />
+      </main>
+    </div>
+  </ClerkLoaded>
 </template>
 
 <style scoped>
+.loading-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.loading-copy {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(0.75rem, 0.72rem + 0.15vw, 0.8125rem);
+  font-weight: var(--font-mono-weight);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
 .shell {
   min-height: 100vh;
   min-height: 100dvh;

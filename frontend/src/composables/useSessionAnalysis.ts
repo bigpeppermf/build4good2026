@@ -1,5 +1,6 @@
 import { onUnmounted, ref } from "vue";
 
+import { useMirageAuth } from "./useMirageAuth";
 import { apiUrl } from "../utils/apiUrl";
 
 const POLL_INTERVAL_MS = 2_000;
@@ -156,6 +157,7 @@ function parseScore(value: unknown): SessionScoreData | null {
 }
 
 export function useSessionAnalysis() {
+  const { apiFetch } = useMirageAuth();
   const sessionId = ref<string | null>(null);
   const status = ref<AnalysisStatus>("idle");
   const stage = ref<string | null>(null);
@@ -193,7 +195,7 @@ export function useSessionAnalysis() {
       return;
     }
     try {
-      const res = await fetch(apiUrl(`/analysis/${sessionId.value}`), {
+      const res = await apiFetch(apiUrl(`/analysis/${sessionId.value}`), {
         method: "GET",
       });
       if (activeToken !== pollToken) {
