@@ -6,7 +6,7 @@ Whiteboard **interview practice** tool — frontend notes. (No product name yet;
 
 ## Current phase
 
-Dashboard: camera aimed at a physical whiteboard; **video + audio** are encoded with `MediaRecorder` and sent to the backend as a **WebSocket stream** of WebM chunks (`src/composables/useWhiteboardSession.ts`). See [STREAMING.md](STREAMING.md) for the wire protocol.
+Dashboard: camera aimed at a physical whiteboard; **full audio** is sent via `MediaRecorder` WebSocket chunks, and **JPEG stills** are captured from the preview every **15s** (`src/composables/useWhiteboardSession.ts`). See [STREAMING.md](STREAMING.md) for the wire protocol.
 
 ## Layout decisions
 

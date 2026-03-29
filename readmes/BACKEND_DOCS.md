@@ -1,4 +1,4 @@
-**Media ingest (current frontend):** live **video + audio** as WebM `MediaRecorder` chunks over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). On the backend side, the image-analysis path now assumes a staged visual pipeline: accepted frames → OCR snapshot → `visual_delta` text → graph agent.
+**Media ingest (current frontend):** full **audio** as WebM `MediaRecorder` chunks (audio-only track) plus **JPEG still frames** from the camera every **15 seconds** over a **WebSocket** (`/api/practice/stream`). Spec: [STREAMING.md](STREAMING.md). The backend frame-filtering module can apply to those JPEG payloads as they arrive. On the backend side, the image-analysis path now assumes a staged visual pipeline: accepted frames → OCR snapshot → `visual_delta` text → graph agent.
 
 ---
 
@@ -75,7 +75,7 @@ When a user begins, we start a timed session. Hints pause the timer and resume a
 The recent backend changes also introduced a more real-time collection direction:
 
 - Media stream: WebSocket at `/api/practice/stream`
-- Current frontend media format: WebM chunks from `MediaRecorder`
+- Current frontend media format: audio WebM chunks from `MediaRecorder` (audio-only) plus JPEG binaries on a fixed interval
 - Environment includes `GOOGLE_API_KEY` support for Gemini-based multimodal workflows
 - LangChain and Gemini packages are now part of backend dependencies
 
