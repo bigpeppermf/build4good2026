@@ -39,22 +39,28 @@ class FrameProcessor:
         self.output_format = output_format
         self.last_accepted_frame: np.ndarray | None = None
         self.last_accepted_timestamp: float | int | None = None
+        self.discard_reason: str | None = None
         self._person_model = YOLO(model_name)
 
     def process_frame(self, image: str | bytes | np.ndarray, timestamp: float | int) -> dict[str, Any] | None:
         """
         Decode a frame, drop it if a person is visible or if it is too similar
         to the last accepted frame, otherwise return the accepted frame payload.
+        Sets ``self.discard_reason`` to ``"person_detected"`` or ``"no_change"``
+        when returning ``None``, and ``None`` on success.
         """
+        self.discard_reason = None
         decoded = self._decode_image(image)
 
         if self.detect_person(decoded):
+            self.discard_reason = "person_detected"
             return None
 
         normalized = self._prepare_for_diff(decoded)
         if self.last_accepted_frame is not None:
             diff = self.compute_diff(self.last_accepted_frame, normalized)
             if diff < self.diff_threshold:
+                self.discard_reason = "no_change"
                 return None
 
         encoded = self._encode_output(decoded)

@@ -40,6 +40,20 @@ function lastSessionKey(userId: string): string {
   return `${LAST_KEY}:${userId}`;
 }
 
+function safeReadRecentSessions(
+  userId: string,
+): { sessionId: string; savedAt: string }[] {
+  try {
+    const raw = localStorage.getItem(recentSessionsKey(userId));
+    if (!raw) {
+      return [];
+    }
+    return JSON.parse(raw) as { sessionId: string; savedAt: string }[];
+  } catch {
+    return [];
+  }
+}
+
 export function persistWhiteboardSnapshot(data: WhiteboardSessionSnapshot): void {
   try {
     localStorage.setItem(
@@ -81,15 +95,7 @@ export function loadWhiteboardSnapshot(
 export function getRecentSessions(
   userId: string,
 ): { sessionId: string; savedAt: string }[] {
-  try {
-    const raw = localStorage.getItem(recentSessionsKey(userId));
-    if (!raw) {
-      return [];
-    }
-    return JSON.parse(raw) as { sessionId: string; savedAt: string }[];
-  } catch {
-    return [];
-  }
+  return safeReadRecentSessions(userId);
 }
 
 export function getLastSessionId(userId: string): string | null {
@@ -97,5 +103,36 @@ export function getLastSessionId(userId: string): string | null {
     return localStorage.getItem(lastSessionKey(userId));
   } catch {
     return null;
+  }
+}
+
+export function deleteWhiteboardSnapshot(userId: string, sessionId: string): void {
+  if (!userId || !sessionId) {
+    return;
+  }
+
+  try {
+    localStorage.removeItem(sessionStorageKey(userId, sessionId));
+
+    const filtered = safeReadRecentSessions(userId).filter(
+      (item) => item.sessionId !== sessionId,
+    );
+    if (filtered.length > 0) {
+      localStorage.setItem(recentSessionsKey(userId), JSON.stringify(filtered));
+    } else {
+      localStorage.removeItem(recentSessionsKey(userId));
+    }
+
+    const lastKey = lastSessionKey(userId);
+    const last = localStorage.getItem(lastKey);
+    if (last === sessionId) {
+      if (filtered.length > 0) {
+        localStorage.setItem(lastKey, filtered[0].sessionId);
+      } else {
+        localStorage.removeItem(lastKey);
+      }
+    }
+  } catch {
+    /* private mode / quota */
   }
 }

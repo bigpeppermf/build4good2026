@@ -9,6 +9,10 @@ Endpoints:
   POST /end-session           — save the completed graph to MongoDB
   POST /chat                  — ask follow-up questions using saved analysis context
 
+All endpoints except GET /docs require a valid Clerk Bearer token in the
+Authorization header.  Sessions are scoped to the authenticated user — requests
+from a different user that happen to know a session_id will receive 403.
+
 Run:
     uv run main.py
 """
@@ -27,6 +31,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 from agent import AnalysisAgent, ChatAgent, ValidationAgent, WhiteboardAgent
+from core.auth import verify_clerk_token
 from core.graph import SystemDesignGraph
 from core.session_store import SessionStore
 
@@ -38,9 +43,45 @@ load_dotenv()
 
 _store = SessionStore(uri=os.environ["MONGODB_URI"])
 
-# Per-user session registry: session_id → {"graph": ..., "agent": ...}
+# Per-user session registry: session_id → {"graph": ..., "agent": ..., "user_id": ...}
 _sessions: dict[str, dict] = {}
 _analysis_jobs: dict[str, dict] = {}
+
+# Ownership registry: session_id → user_id.
+# Persists across the active→post-session transition so analysis_status
+# can enforce ownership after the in-memory session has been popped.
+_session_owners: dict[str, str] = {}
+
+
+# ------------------------------------------------------------------ #
+# Auth helpers                                                         #
+# ------------------------------------------------------------------ #
+
+async def _require_auth(request: Request) -> str:
+    """
+    Extract and verify the Clerk Bearer token from the Authorization header.
+
+    Returns the Clerk user_id (``sub`` claim) on success.
+    Raises ValueError with a human-readable message on auth failure.
+    Raises RuntimeError if the server is missing CLERK_JWKS_URL configuration.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise ValueError("Missing or malformed Authorization header. Expected: Bearer <token>")
+    token = auth_header[len("Bearer "):]
+    return verify_clerk_token(token)
+
+
+def _auth_error(message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=401)
+
+
+def _config_error(message: str) -> JSONResponse:
+    return JSONResponse({"error": f"Server configuration error: {message}"}, status_code=500)
+
+
+def _forbidden() -> JSONResponse:
+    return JSONResponse({"error": "Forbidden."}, status_code=403)
 
 
 # ------------------------------------------------------------------ #
@@ -128,20 +169,31 @@ async def serve_docs(_request: Request) -> HTMLResponse:
     return HTMLResponse(html)
 
 
-async def new_session(_request: Request) -> JSONResponse:
+async def new_session(request: Request) -> JSONResponse:
     """
     POST /new-session
     Creates a fresh graph and agent for a new user session.
     Returns a session_id that must be included in all subsequent requests.
 
+    Requires a valid Clerk Bearer token.  The session is bound to the
+    authenticated user — only that user may access or end it.
+
     The ``VisualDeltaPipeline`` (YOLO + Gemini Vision) is created lazily on
     the first ``POST /agent/process-capture`` so importing this module does
     not load heavyweight CV dependencies.
     """
+    try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
     session_id = str(uuid.uuid4())
     graph = SystemDesignGraph()
     agent = WhiteboardAgent(graph)
-    _sessions[session_id] = {"graph": graph, "agent": agent}
+    _sessions[session_id] = {"graph": graph, "agent": agent, "user_id": user_id}
+    _session_owners[session_id] = user_id
     return JSONResponse({"session_id": session_id})
 
 
@@ -159,6 +211,13 @@ async def process_frame(request: Request) -> JSONResponse:
         timestamp_ms  — milliseconds since session start (default: 0)
     """
     try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
+    try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         return JSONResponse({"error": "Request body must be JSON."}, status_code=400)
@@ -166,6 +225,9 @@ async def process_frame(request: Request) -> JSONResponse:
     session_id = body.get("session_id", "")
     if not session_id or session_id not in _sessions:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    if _sessions[session_id].get("user_id") != user_id:
+        return _forbidden()
 
     visual_delta = body.get("visual_delta", "")
     timestamp_ms = int(body.get("timestamp_ms", 0))
@@ -184,7 +246,15 @@ async def analysis_status(request: Request) -> JSONResponse:
     """
     GET /analysis/{session_id}
     Poll status for a post-session analysis/save job started by POST /end-session.
+    Only the session owner may poll.
     """
+    try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
     session_id = request.path_params.get("session_id", "")
     if not session_id:
         return JSONResponse({"error": "Missing 'session_id' path parameter."}, status_code=400)
@@ -192,6 +262,10 @@ async def analysis_status(request: Request) -> JSONResponse:
     status_payload = _analysis_jobs.get(session_id)
     if status_payload is None:
         return JSONResponse({"error": "Unknown 'session_id' for analysis."}, status_code=404)
+
+    owner = _session_owners.get(session_id)
+    if owner is not None and owner != user_id:
+        return _forbidden()
 
     return JSONResponse(status_payload)
 
@@ -201,6 +275,7 @@ async def _run_post_session_pipeline(
     graph: SystemDesignGraph,
     audio_bytes: bytes,
     audio_mime_type: str,
+    user_id: str = "",
 ) -> None:
     """
     Post-session pipeline:
@@ -234,6 +309,7 @@ async def _run_post_session_pipeline(
         summary = await _store.save_session(
             graph,
             session_id,
+            user_id=user_id,
             audio_transcript=validation_result.transcript,
             validation_corrections=validation_result.corrections_made,
             validation_summary=validation_result.validation_summary,
@@ -274,7 +350,11 @@ async def _run_post_session_pipeline(
             "validation_corrections": validation_result.corrections_made,
             "graph_confidence": validation_result.graph_confidence,
         }
-        analysis_save_summary = await _store.save_analysis(session_id, analysis_output)
+        analysis_save_summary = await _store.save_analysis(
+            session_id,
+            analysis_output,
+            user_id=user_id,
+        )
 
         _analysis_jobs[session_id] = {
             "session_id": session_id,
@@ -318,7 +398,15 @@ async def end_session(request: Request) -> JSONResponse:
       session_id - ID returned by POST /new-session
       audio      - recorded session audio blob (webm/ogg)
     Returns HTTP 202 and starts asynchronous post-session processing.
+    Only the session owner may call this endpoint.
     """
+    try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" not in content_type:
         return JSONResponse(
@@ -336,6 +424,9 @@ async def end_session(request: Request) -> JSONResponse:
     if not session_id or session_id not in _sessions:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
 
+    if _sessions[session_id].get("user_id") != user_id:
+        return _forbidden()
+
     audio_upload = form.get("audio")
     if not isinstance(audio_upload, UploadFile):
         return JSONResponse({"error": "Missing or invalid 'audio' field."}, status_code=400)
@@ -347,7 +438,16 @@ async def end_session(request: Request) -> JSONResponse:
 
     graph = _sessions[session_id]["graph"]
     if len(graph) == 0:
-        return JSONResponse({"error": "Graph is empty - nothing to save."}, status_code=400)
+        return JSONResponse(
+            {
+                "error": (
+                    "Graph is empty — no whiteboard content was captured. "
+                    "Make sure you step away from the camera while drawing so the "
+                    "person-detection filter does not discard your frames."
+                )
+            },
+            status_code=400,
+        )
 
     # Pop before enqueueing so IDs are not reusable while processing.
     _sessions.pop(session_id)
@@ -364,6 +464,7 @@ async def end_session(request: Request) -> JSONResponse:
                 graph,
                 audio_bytes,
                 audio_mime_type,
+                user_id,
             )
         )
     except Exception as exc:  # noqa: BLE001
@@ -387,7 +488,15 @@ async def chat(request: Request) -> JSONResponse:
     JSON body:
       session_id - completed session ID with saved analysis
       message    - user follow-up question
+    Only the session owner may chat about a session.
     """
+    try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -406,6 +515,11 @@ async def chat(request: Request) -> JSONResponse:
     analysis_doc = await _store.get_analysis(session_id)
     if analysis_doc is None:
         return JSONResponse({"error": "Unknown 'session_id' for chat."}, status_code=404)
+
+    # Enforce ownership: if the stored doc has a user_id, it must match the caller.
+    doc_user_id = analysis_doc.get("user_id", "")
+    if doc_user_id and doc_user_id != user_id:
+        return _forbidden()
 
     seed_context_raw = analysis_doc.get("chat_seed_context")
     seed_context = seed_context_raw.strip() if isinstance(seed_context_raw, str) else ""
@@ -451,7 +565,15 @@ async def process_capture(request: Request) -> JSONResponse:
     Multipart body for the browser / CV path: JPEG frame + session_id + timestamp.
     Runs the per-session visual_delta pipeline, then the Gemini agent when a delta
     is produced (same as POST /agent/process-frame with plain-text visual_delta).
+    Only the session owner may submit frames.
     """
+    try:
+        user_id = await _require_auth(request)
+    except RuntimeError as exc:
+        return _config_error(str(exc))
+    except ValueError as exc:
+        return _auth_error(str(exc))
+
     try:
         form = await request.form()
     except Exception:  # noqa: BLE001
@@ -461,6 +583,9 @@ async def process_capture(request: Request) -> JSONResponse:
     session_id = raw_sid if isinstance(raw_sid, str) else ""
     if not session_id or session_id not in _sessions:
         return JSONResponse({"error": "Invalid or missing 'session_id'."}, status_code=404)
+
+    if _sessions[session_id].get("user_id") != user_id:
+        return _forbidden()
 
     raw_ts = form.get("timestamp_ms", "0")
     timestamp_ms = int(raw_ts) if isinstance(raw_ts, str) else 0
@@ -487,7 +612,8 @@ async def process_capture(request: Request) -> JSONResponse:
         return JSONResponse({"error": _pipeline_error_message(exc)}, status_code=500)
 
     if pipeline_result is None:
-        return JSONResponse({"discarded": True, "timestamp_ms": timestamp_ms})
+        reason = pipeline.discard_reason or "no_change"
+        return JSONResponse({"discarded": True, "reason": reason, "timestamp_ms": timestamp_ms})
 
     try:
         verbal_response = agent.process_frame(

@@ -9,19 +9,35 @@ early (400/404 responses) before touching external services.
 
 import os
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
-# Force a stub key before importing server.app so post-session validation
-# never makes real Gemini API calls during this test module.
+# Force stub keys before importing server.app so no real external calls are made.
 os.environ["GOOGLE_API_KEY"] = "test-key-stub"
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
+os.environ.setdefault("CLERK_JWKS_URL", "https://test.clerk.test/.well-known/jwks.json")
 
 from starlette.testclient import TestClient  # noqa: E402
 
 from server.app import app  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=False)
+
+# Default user ID injected by the autouse auth patch below.
+TEST_USER_ID = "user_test_default_abc123"
+
+
+@pytest.fixture(autouse=True)
+def patch_require_auth(monkeypatch):
+    """
+    Patch _require_auth for every test in this module so that all existing
+    tests continue to work without real Clerk tokens.  Tests that specifically
+    exercise auth behaviour live in test_auth_enforcement.py and opt out of
+    this fixture.
+    """
+    import server.app as srv
+    monkeypatch.setattr(srv, "_require_auth", AsyncMock(return_value=TEST_USER_ID))
 
 
 # ------------------------------------------------------------------ #
@@ -432,7 +448,7 @@ class TestAnalysisStatusEndpoint:
         assert payload["feedback"] == expected_analysis["feedback"]
         assert payload["score"] == expected_analysis["score"]
         assert payload["analysis_summary"]["analysis_saved"] is True
-        mock_save_analysis.assert_awaited_once_with(sid, expected_analysis)
+        mock_save_analysis.assert_awaited_once_with(sid, expected_analysis, user_id=TEST_USER_ID)
         assert FakeAnalysisAgent.seen_transcripts[-1] == expected_validation.transcript
         assert FakeAnalysisAgent.seen_metadata[-1]["session_id"] == sid
         assert FakeAnalysisAgent.seen_metadata[-1]["nodes_saved"] == 2

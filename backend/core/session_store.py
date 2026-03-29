@@ -8,6 +8,7 @@ Database : system_design
 Collection: sessions
   {
     "_id":              str   (session_id),
+    "user_id":          str   (Clerk user ID — owner of this session),
     "created_at":       datetime,
     "traversal_order":  [str, ...],   # node IDs in BFS order
     "edges":            [{"from": str, "to": str, "label": str}, ...],
@@ -40,6 +41,7 @@ Collection: frames
 Collection: analysis
   {
     "_id":              str   (session_id),
+    "user_id":          str   (Clerk user ID — owner of this session),
     "created_at":       datetime,
     "analysis":         dict,
     "feedback":         dict,
@@ -146,6 +148,7 @@ class SessionStore:
         graph: SystemDesignGraph,
         session_id: str,
         *,
+        user_id: str = "",
         audio_transcript: str = "",
         validation_corrections: int = 0,
         validation_summary: str = "Graph matches transcript",
@@ -175,6 +178,7 @@ class SessionStore:
 
         session_doc = {
             "_id": session_id,
+            "user_id": user_id,
             "created_at": now,
             "traversal_order": traversal_order,
             "edges": state["edges"],
@@ -250,7 +254,7 @@ class SessionStore:
             lines.append(f"Top improvement: {top_improvement}")
         return " ".join(lines)
 
-    async def save_analysis(self, session_id: str, analysis_output: dict) -> dict:
+    async def save_analysis(self, session_id: str, analysis_output: dict, *, user_id: str = "") -> dict:
         """
         Persist post-session analysis output to the analysis collection.
         """
@@ -268,6 +272,7 @@ class SessionStore:
         now = datetime.now(timezone.utc)
         analysis_doc = {
             "_id": session_id,
+            "user_id": user_id,
             "created_at": now,
             "analysis": analysis,
             "feedback": feedback,

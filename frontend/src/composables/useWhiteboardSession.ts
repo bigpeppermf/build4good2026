@@ -367,7 +367,11 @@ export function useWhiteboardSession() {
 
       if (data.discarded === true) {
         discardedFramesCount.value += 1;
-        lastCaptureActivity.value = `Stills uploaded: ${imageFramesSentCount.value} · ${discardedFramesCount.value} discarded · ${processedFramesCount.value} with coach reply · Last: discarded (no change)`;
+        const discardLabel =
+          data.reason === "person_detected"
+            ? "person visible — step away from the camera"
+            : "no change detected";
+        lastCaptureActivity.value = `Stills uploaded: ${imageFramesSentCount.value} · ${discardedFramesCount.value} discarded · ${processedFramesCount.value} with coach reply · Last: discarded (${discardLabel})`;
         lastCaptureProcessStatus.value = "success";
         return;
       }

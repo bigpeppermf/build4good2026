@@ -7,6 +7,7 @@ import {
   type FrameCropNorm,
 } from "../composables/useWhiteboardSession";
 import {
+  deleteWhiteboardSnapshot,
   getRecentSessions,
   persistWhiteboardSnapshot,
 } from "../utils/sessionOutputStorage";
@@ -67,6 +68,23 @@ function formatSavedAt(iso: string): string {
 
 function shortSessionId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
+function handleDeleteRecentSession(sessionIdToDelete: string) {
+  const activeUserId = currentUserId.value;
+  if (!activeUserId) {
+    return;
+  }
+
+  const confirmed = window.confirm(
+    "Delete this saved session from this browser?",
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  deleteWhiteboardSnapshot(activeUserId, sessionIdToDelete);
+  recentSessionsList.value = getRecentSessions(activeUserId);
 }
 
 const previewRef = ref<HTMLElement | null>(null);
@@ -555,17 +573,27 @@ async function handleClose() {
             :key="row.sessionId"
             class="recent-sessions-item"
           >
-            <RouterLink
-              class="recent-sessions-link"
-              :to="{
-                name: 'chat',
-                params: { sessionId: row.sessionId },
-                query: { session: row.sessionId },
-              }"
-            >
-              <span class="recent-sessions-id">{{ shortSessionId(row.sessionId) }}</span>
-              <span class="recent-sessions-time">{{ formatSavedAt(row.savedAt) }}</span>
-            </RouterLink>
+            <div class="recent-sessions-row">
+              <RouterLink
+                class="recent-sessions-link"
+                :to="{
+                  name: 'chat',
+                  params: { sessionId: row.sessionId },
+                  query: { session: row.sessionId },
+                }"
+              >
+                <span class="recent-sessions-id">{{ formatSavedAt(row.savedAt) }}</span>
+                <span class="recent-sessions-time">{{ shortSessionId(row.sessionId) }}</span>
+              </RouterLink>
+              <button
+                type="button"
+                class="btn-recent-delete"
+                :aria-label="`Delete saved session ${shortSessionId(row.sessionId)}`"
+                @click="handleDeleteRecentSession(row.sessionId)"
+              >
+                Delete
+              </button>
+            </div>
           </li>
         </ul>
         <RouterLink
@@ -709,10 +737,18 @@ async function handleClose() {
   border-bottom: none;
 }
 
+.recent-sessions-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
 .recent-sessions-link {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
   padding: 0.55rem 0.15rem;
   text-decoration: none;
   color: inherit;
@@ -735,6 +771,37 @@ async function handleClose() {
   font-size: clamp(0.625rem, 0.6rem + 0.1vw, 0.6875rem);
   font-weight: var(--font-mono-weight);
   color: var(--ink-muted);
+}
+
+.btn-recent-delete {
+  flex-shrink: 0;
+  min-height: 1.95rem;
+  padding: 0.35rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.625rem, 0.6rem + 0.1vw, 0.6875rem);
+  font-weight: var(--font-mono-weight);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 1px dashed rgb(224 112 86 / 0.4);
+  border-radius: 3px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.btn-recent-delete:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: rgb(248 113 113 / 0.08);
+}
+
+.btn-recent-delete:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .btn-recent-chat {
